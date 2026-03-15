@@ -179,9 +179,13 @@ async def _run_grok(junk_desc: str,
 
     system = (
         f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
+        f"CRITICAL DISTINCTION:\n"
+        f"- PROJECT GOAL = the thing the user wants to BUILD. They do NOT have this yet.\n"
+        f"- INVENTORY = the physical items the user ALREADY OWNS. Analyze THESE.\n"
+        f"- NEVER treat the project goal as an inventory item.\n\n"
         f"ABSOLUTE RULE: The user is building ONLY from the inventory they listed below. "
-        f"They are NOT buying new parts. Your job is to analyze EACH SPECIFIC ITEM they "
-        f"have and explain exactly how it can be repurposed for their project.\n\n"
+        f"They are NOT buying new parts. Your job is to analyze EACH SPECIFIC ITEM in "
+        f"their inventory and explain exactly how it can be repurposed to build the project goal.\n\n"
         f"For EVERY item in the inventory:\n"
         f"1. Identify what useful components it contains (motors, frames, wiring, sensors, etc.)\n"
         f"2. Explain the engineering properties of those components\n"
@@ -207,10 +211,13 @@ async def _run_grok(junk_desc: str,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user",   "content":
-                            f"INVENTORY (this is ALL I have — I am NOT buying new parts):\n{junk_desc}\n\n"
-                            f"PROJECT GOAL: {project_type}\n\n"
+                            f"WHAT I WANT TO BUILD (this is my goal — I do NOT already have this):\n{project_type}\n\n"
+                            f"WHAT I ACTUALLY HAVE (these are the physical items I own — build from THESE):\n{junk_desc}\n\n"
+                            f"IMPORTANT: The project goal above is what I want to CREATE. "
+                            f"The inventory below is what I have to BUILD IT FROM. "
+                            f"Do NOT treat the project goal as an inventory item.\n\n"
                             f"Break down every item in my inventory and tell me exactly "
-                            f"what useful parts I can harvest from each one for this project."},
+                            f"what useful parts I can harvest from each one to build the project goal."},
                     ],
                     "max_tokens":  1500,
                     "temperature": 0.3,
@@ -250,8 +257,12 @@ async def _run_claude(junk_desc: str,
     system = (
         "You are CLAUDE-SONNET, a senior robotics and mechanical engineer "
         "on AoC3P0 Builder Foundry.\n\n"
+        "CRITICAL DISTINCTION:\n"
+        "- PROJECT GOAL = the thing the user wants to BUILD. They do NOT have this yet.\n"
+        "- INVENTORY = the physical items the user ALREADY OWNS. Build from THESE.\n"
+        "- NEVER treat the project goal as an inventory item. NEVER harvest parts from it.\n\n"
         "ABSOLUTE RULE: The Materials Manifest section must be built ENTIRELY from "
-        "components harvested from the user's inventory. Do NOT list generic parts "
+        "components harvested from the user's inventory items. Do NOT list generic parts "
         "to buy. Instead, for each material needed, specify which inventory item it "
         "comes from. Example: 'Drive Motor: Harvested from treadmill (2.5HP DC motor, "
         "model X)' or 'Structural Frame: Repurposed from treadmill steel base.'\n\n"
@@ -280,9 +291,13 @@ async def _run_claude(junk_desc: str,
                 "role":    "user",
                 "content": (
                     f"GROK-3 ANALYSIS OF MY INVENTORY:\n{grok_analysis}\n\n"
-                    f"MY INVENTORY (this is ALL I have — do NOT add parts I don't own):\n{junk_desc}\n\n"
-                    f"PROJECT GOAL: {project_type}\n\n"
-                    f"Generate a complete blueprint using ONLY parts from my inventory. "
+                    f"WHAT I WANT TO BUILD (this is my goal — I do NOT own this yet):\n{project_type}\n\n"
+                    f"WHAT I ACTUALLY HAVE (build from ONLY these items):\n{junk_desc}\n\n"
+                    f"IMPORTANT: '{project_type}' is the thing I want to CREATE. "
+                    f"It is NOT in my inventory. Do NOT harvest parts from it. "
+                    f"The inventory items listed above are the ONLY source of parts.\n\n"
+                    f"Generate a complete blueprint for building '{project_type}' using "
+                    f"ONLY parts harvested from the inventory items listed above. "
                     f"Every item in the Materials Manifest must reference which inventory "
                     f"item it was harvested from."
                 ),
