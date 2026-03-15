@@ -159,25 +159,33 @@ async def stripe_webhook(request: Request):
 
     # ── EVENT HANDLERS ──
 
-   if event_type == "checkout.session.completed":
+    if event_type == "checkout.session.completed":
+        # New purchase: create a license automatically
+        # Use "or" to convert any None values to empty strings
         customer_id = data_obj.get("customer") or ""
-        email       = (data_obj.get("customer_details") or {}).get("email") or ""
-        name        = (data_obj.get("customer_details") or {}).get("name") or ""
+        customer_details = data_obj.get("customer_details") or {}
+        email       = customer_details.get("email") or ""
+        name        = customer_details.get("name") or ""
         price_id    = ""
 
-        line_items = (data_obj.get("line_items") or {})
-        if isinstance(line_items, dict):
-            line_items = line_items.get("data", [])
+        # Pull price ID from line items if available
+        raw_line_items = data_obj.get("line_items") or {}
+        if isinstance(raw_line_items, dict):
+            line_items = raw_line_items.get("data", [])
         else:
             line_items = []
         if line_items:
-            price_id = ((line_items[0].get("price") or {}).get("id") or "")
+            price_obj = line_items[0].get("price") or {}
+            price_id = price_obj.get("id") or ""
 
         tier, _, days = _tier_for_price(price_id)
 
+        log.info("Checkout data: email=%s, name=%s, customer=%s, price=%s, tier=%s",
+                 email, name, customer_id, price_id, tier)
+
         try:
             result = await _create_license(email, name, customer_id, tier, days)
-            log.info("License created: %s → %s (%s)", email, result.get("key"), tier)
+            log.info("License created: %s -> %s (%s)", email, result.get("key"), tier)
 
             # Mark event processed
             with get_db() as conn:
