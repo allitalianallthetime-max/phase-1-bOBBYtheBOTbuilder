@@ -445,32 +445,44 @@ async def _generate_schematic(blueprint: str,
 async def _forge_pipeline(user_email: str,
                            junk_desc: str,
                            project_type: str,
-                           detail_level: str) -> dict:
+                           detail_level: str,
+                           task=None) -> dict:
+
+    def _update(msg):
+        if task:
+            task.update_state(state="PROGRESS", meta={"message": msg})
+
     # 0 — Recall Conception memory (context for all agents)
+    _update("🔍 Scanning Conception memory banks...")
     ctx = await _recall_conception_memory(user_email, junk_desc, project_type)
 
     # 1 — Grok: structural analysis
+    _update("🔧 GROK-3 disassembling inventory... identifying harvestable components")
     log.info("Agent 1: Grok structural analysis")
     grok_r   = await _run_grok(junk_desc, project_type, detail_level, ctx)
     grok_out = grok_r["analysis"]
 
     # 2 — Claude: engineering blueprint
+    _update("📐 CLAUDE mapping component pathways... drafting engineering blueprint")
     log.info("Agent 2: Claude blueprint")
     claude_r  = await _run_claude(junk_desc, project_type, grok_out, detail_level, ctx)
     blueprint = claude_r["blueprint"]
 
     # 3 — Gemini: quality review
+    _update("🔬 GEMINI inspecting blueprint... checking safety and inventory usage")
     log.info("Agent 3: Gemini review")
     gemini_r = await _run_gemini(blueprint, project_type, ctx)
     notes    = gemini_r["notes"] if isinstance(gemini_r["notes"], dict) else {}
 
     # 4 — Schematic: technical drawing
+    _update("✏️ Plotting technical schematic... rendering component layout")
     log.info("Agent 4: Schematic generation")
     schematic_svg = await _generate_schematic(blueprint, project_type, junk_desc)
 
     total_tokens = grok_r["tokens"] + claude_r["tokens"]
 
-    # 4 — Save to database
+    # 5 — Save to database
+    _update("💾 Archiving blueprint to Conception DNA Vault...")
     build_id = None
     try:
         with get_db() as conn:
@@ -551,7 +563,7 @@ def forge_blueprint_task(self,
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(
-            _forge_pipeline(user_email, junk_desc, project_type, detail_level)
+            _forge_pipeline(user_email, junk_desc, project_type, detail_level, task=self)
         )
     except Exception as e:
         log.error("Forge pipeline failed: %s", e)
