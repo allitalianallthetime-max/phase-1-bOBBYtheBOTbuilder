@@ -517,17 +517,22 @@ if st.session_state.active_tab == "forge":
                     schematic = data.get("result", {}).get("schematic_svg", "")
 
                     # Display schematic drawing if available
-                    if schematic and schematic.startswith("<svg"):
+                    if schematic and "<svg" in schematic and "</svg>" in schematic:
+                        # Sanitize: extract only the SVG portion
+                        svg_start = schematic.find("<svg")
+                        svg_end = schematic.rfind("</svg>") + 6
+                        clean_svg = schematic[svg_start:svg_end]
+
                         st.markdown("#### 📐 TECHNICAL SCHEMATIC")
                         st.markdown(
                             f'<div style="background:white; padding:16px; '
                             f'border-radius:8px; border:1px solid #334155; '
-                            f'overflow-x:auto;">{schematic}</div>',
+                            f'overflow-x:auto;">{clean_svg}</div>',
                             unsafe_allow_html=True
                         )
                         st.download_button(
                             "📐 DOWNLOAD SCHEMATIC (.svg)",
-                            data=schematic,
+                            data=clean_svg,
                             file_name=f"schematic_{build_id or 'draft'}.svg",
                             mime="image/svg+xml",
                             use_container_width=True
