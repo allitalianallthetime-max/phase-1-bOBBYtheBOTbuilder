@@ -436,29 +436,51 @@ async def _generate_schematic(blueprint: str,
         return ""
 
     system = (
-        "You are a technical illustrator. Generate a COMPLETE, VALID SVG technical "
-        "schematic drawing. Return ONLY the raw SVG code — no markdown, no ```svg tags, "
-        "no explanation. Just the SVG starting with <svg and ending with </svg>.\n\n"
-        "DRAWING REQUIREMENTS:\n"
-        "- Canvas: 800x600 pixels with a light grid background (10px spacing)\n"
-        "- Title block in top-left with project name and scale\n"
-        "- Main view: Top-down OR side-view schematic of the assembled project\n"
-        "- Each major component drawn as a labeled rectangle or shape with:\n"
-        "  - Component name inside or next to it\n"
-        "  - Source label (which inventory item it came from) in smaller italic text\n"
-        "  - Dimension lines with measurements where relevant\n"
-        "- Use these colors:\n"
-        "  - #2563EB (blue) for structural/frame components\n"
-        "  - #DC2626 (red) for motors and actuators\n"
-        "  - #16A34A (green) for electronics and control systems\n"
-        "  - #9333EA (purple) for sensors\n"
-        "  - #D97706 (amber) for belts, chains, and mechanical linkages\n"
-        "  - #1E293B (dark) for text and dimension lines\n"
-        "- Include a color-coded legend in the bottom-right corner\n"
-        "- Use dashed lines to show connections between components\n"
-        "- Add dimension arrows with approximate measurements\n"
-        "- Professional engineering drawing style — clean lines, clear labels\n"
-        "- All text must be readable (minimum 10px font size)\n"
+        "You are a technical illustrator who draws simplified side-view technical "
+        "drawings of engineering projects. Return ONLY valid SVG code.\n\n"
+        "ABSOLUTE RULES:\n"
+        "1. Output starts with <svg and ends with </svg>. NOTHING else.\n"
+        "2. No markdown, no ```svg, no explanation text before or after.\n"
+        "3. Allowed SVG elements: <svg>, <rect>, <text>, <line>, <g>, <circle>, "
+        "<ellipse>, <polygon>, <path>. No <foreignObject>, no <image>, no <style>, "
+        "no <script>, no <clipPath>, no <defs>, no <filter>.\n"
+        "4. All styling via inline attributes (fill=, stroke=, font-size=, etc).\n"
+        "5. font-family='Arial, sans-serif' on all text.\n"
+        "6. viewBox='0 0 800 550'. White background rect first.\n\n"
+        "DRAWING STYLE — TECHNICAL ILLUSTRATION:\n"
+        "Draw the project as it would ACTUALLY LOOK when assembled, using a "
+        "simplified side-view or 3/4 view. Use basic geometric shapes to represent "
+        "the real form:\n"
+        "- A ROBOT: Draw a recognizable humanoid silhouette — rectangular torso, "
+        "cylindrical/rectangular legs with joints, circular joints at hips/knees, "
+        "rectangular feet. It should look like a robot.\n"
+        "- A VEHICLE: Draw the vehicle shape — chassis, wheels, cab, etc.\n"
+        "- A MACHINE: Draw the machine shape — housing, drum, conveyor, etc.\n"
+        "- ANY PROJECT: Draw what it actually looks like, simplified.\n\n"
+        "The shapes should be recognizable as the thing being built. NOT just "
+        "a block diagram of labeled rectangles.\n\n"
+        "LABELING:\n"
+        "- Use thin leader lines (stroke='#94A3B8' stroke-width='0.5') from "
+        "components to labels positioned to the LEFT or RIGHT of the drawing.\n"
+        "- Each label: bold 10px component name + 8px source in #64748B below it.\n"
+        "- Example: 'HIP MOTOR' (bold) then 'Source: Treadmill' (gray) below.\n"
+        "- Keep labels outside the drawing, connected by leader lines.\n\n"
+        "COLOR FILLS:\n"
+        "- Structure/frame: fill='#2563EB' opacity='0.2' stroke='#2563EB'\n"
+        "- Motors/actuators: fill='#DC2626' opacity='0.2' stroke='#DC2626'\n"
+        "- Electronics: fill='#16A34A' opacity='0.2' stroke='#16A34A'\n"
+        "- Sensors: fill='#9333EA' opacity='0.2' stroke='#9333EA'\n"
+        "- Belts/mechanical: fill='#D97706' opacity='0.2' stroke='#D97706'\n"
+        "- Joints/pivots: fill='#475569' stroke='#1E293B' (dark circles)\n\n"
+        "LAYOUT:\n"
+        "- Center the drawing in the canvas (main object roughly x=200-600)\n"
+        "- Labels on left side (x=20-180) and right side (x=620-790)\n"
+        "- Title: 14px bold top-left with project name\n"
+        "- 2-3 dimension lines with arrows showing overall height and width\n"
+        "- Small color legend in bottom-right corner (5 small squares with text)\n"
+        "- Faint grid behind everything: lines every 40px, stroke='#F1F5F9'\n\n"
+        "Keep path d= attributes simple — straight lines and basic curves only. "
+        "No complex bezier art. Think engineering drawing, not illustration."
     )
 
     try:
@@ -470,28 +492,34 @@ async def _generate_schematic(blueprint: str,
             messages=[{
                 "role": "user",
                 "content": (
-                    f"Create an SVG technical schematic for this project.\n\n"
-                    f"PROJECT: {project_type}\n\n"
-                    f"INVENTORY ITEMS USED:\n{junk_desc}\n\n"
-                    f"BLUEPRINT SUMMARY (focus on the Materials Manifest and "
-                    f"Assembly Sequence sections):\n{blueprint[:2500]}\n\n"
-                    f"Draw the assembled project showing where each harvested "
-                    f"component goes. Label every part with its name and which "
-                    f"inventory item it came from."
+                    f"Draw a technical illustration of: {project_type}\n\n"
+                    f"It is built from these inventory items:\n{junk_desc}\n\n"
+                    f"Here is the blueprint describing the assembly:\n{blueprint[:2000]}\n\n"
+                    f"Draw what the finished {project_type} looks like from the side, "
+                    f"with each major component colored by type and labeled with "
+                    f"leader lines showing what it is and which inventory item it came from.\n\n"
+                    f"Output ONLY the <svg>...</svg> code. Nothing else."
                 ),
             }],
         )
         svg = resp.content[0].text.strip()
-        # Clean up in case the AI wrapped it in markdown
-        if "```" in svg:
-            svg = svg.split("```")[1] if "```" in svg else svg
-            if svg.startswith("svg"):
-                svg = svg[3:]
-            svg = svg.strip()
-        # Validate it starts with <svg
-        if not svg.startswith("<svg"):
-            log.warning("Schematic generation returned non-SVG content.")
+
+        # Aggressive cleanup — extract only the SVG tags
+        svg_start = svg.find("<svg")
+        svg_end = svg.rfind("</svg>")
+        if svg_start == -1 or svg_end == -1:
+            log.warning("Schematic: no valid SVG tags found.")
             return ""
+        svg = svg[svg_start:svg_end + 6]
+
+        # Remove any stray markdown artifacts
+        svg = svg.replace("```", "").replace("`", "")
+
+        # Verify it's not absurdly long (broken SVG tends to be huge)
+        if len(svg) > 20000:
+            log.warning("Schematic SVG too large (%d chars), likely broken.", len(svg))
+            return ""
+
         log.info("Schematic SVG generated: %d chars", len(svg))
         return svg
     except Exception as e:
