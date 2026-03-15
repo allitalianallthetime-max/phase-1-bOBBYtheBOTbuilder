@@ -86,9 +86,13 @@ def gen_blueprint(req: BuildReq):
     finally:
         db_pool.putconn(conn)  # ALWAYS returns the connection, no matter what
 
+    # BUG FIX: argument order must match ai_worker.forge_blueprint_task signature:
+    #   forge_blueprint_task(self, user_email, junk_desc, project_type, detail_level)
+    # Was previously: args=[req.junk_desc, req.project_type, req.user_email, req.detail_level]
+    # which put inventory into user_email, project name into junk_desc, and email into project_type.
     task = celery_app.send_task(
         "ai_worker.forge_blueprint_task",
-        args=[req.junk_desc, req.project_type, req.user_email, req.detail_level]
+        args=[req.user_email, req.junk_desc, req.project_type, req.detail_level]
     )
     return {"status": "processing", "task_id": task.id}
 
