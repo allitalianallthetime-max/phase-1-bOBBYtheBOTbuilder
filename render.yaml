@@ -52,7 +52,7 @@ services:
   - type: redis
     name: builder-redis
     plan: free
-    IP allow list: [0]
+    IP allow list: []
     region: oregon
     maxmemoryPolicy: allkeys-lru
 
