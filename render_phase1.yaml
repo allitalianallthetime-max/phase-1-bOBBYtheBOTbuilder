@@ -1,0 +1,270 @@
+## ═══════════════════════════════════════════════════════════════════════════
+## CONCEPTION — THE BUILDER FOUNDRY
+## render_phase1.yaml — REVENUE-FIRST LAUNCH
+##
+## 10 items: 1 database, 1 Redis, 7 services + 1 Streamlit app
+## Monthly cost: ~$56 (7 starter × $7 + DB $7 + Redis free)
+## Break-even: 3 Starter licenses ($75) or 1 Pro license ($100)
+##
+## SECRETS — set MANUALLY in Render Dashboard (sync: false).
+## Generate once:  python -c "import secrets; print(secrets.token_hex(32))"
+##
+##   JWT_SECRET              — NEVER rotate after launch
+##   INTERNAL_API_KEY        — same value on every single service
+##   MASTER_KEY              — admin panel access (save for Phase 2)
+##   ANTHROPIC_API_KEY       — console.anthropic.com
+##   GEMINI_API_KEY          — aistudio.google.com (free tier works)
+##   XAI_API_KEY             — x.ai (for Grok-3)
+##   GROK_API_KEY            — same as XAI_API_KEY (some services use this name)
+##   STRIPE_SECRET_KEY       — dashboard.stripe.com → Developers → API keys
+##   STRIPE_WEBHOOK_SECRET   — Stripe → Webhooks → Signing secret
+##   STRIPE_PRICE_STARTER    — your Stripe Price ID for $25/mo plan
+##   STRIPE_PRICE_PRO        — your Stripe Price ID for $100/mo plan
+##   STRIPE_PRICE_MASTER     — your Stripe Price ID for $999/year plan
+##   STRIPE_PAYMENT_URL      — your Stripe checkout/payment link URL
+##   GMAIL_ADDRESS           — (optional) for license delivery emails
+##   GMAIL_APP_PW            — (optional) Google App Password, NOT login pw
+##
+## STRIPE WEBHOOK:
+##   URL:    https://builder-billing.onrender.com/stripe/webhook
+##   Events: checkout.session.completed, customer.subscription.deleted
+##
+## AFTER DEPLOY:
+##   1. Set all secrets in Render Dashboard
+##   2. Test with Stripe test mode first
+##   3. Run one full flow: purchase → login → forge → download
+##   4. Switch Stripe to live mode
+##   5. Post your payment link everywhere
+##
+## ═══════════════════════════════════════════════════════════════════════════
+
+databases:
+  - name: builder-db
+    plan: basic-1gb
+    databaseName: builder
+    user: builder_user
+    region: oregon
+    postgresMajorVersion: "16"
+
+services:
+
+  # ── REDIS ─────────────────────────────────────────────────────────────────
+  - type: redis
+    name: builder-redis
+    plan: free
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PHASE 1: CORE REVENUE PATH (7 services + 1 Streamlit app)
+  # auth → billing → ai → worker → workshop → export → app
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # 1 — AUTH SERVICE
+  #     Gate to everything. Verifies license keys, issues JWTs.
+  #     Without this, nobody can log in or pay you.
+  - type: web
+    name: builder-auth
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn auth_service:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: JWT_SECRET
+        sync: false
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: MASTER_KEY
+        sync: false
+      - key: GMAIL_ADDRESS
+        sync: false
+      - key: GMAIL_APP_PW
+        sync: false
+
+  # 2 — AI SERVICE (FastAPI — accepts forge requests, dispatches to worker)
+  #     Receives blueprint requests from the Streamlit app, checks quota,
+  #     sends task to Celery worker via Redis. Also serves Arena Chat.
+  - type: web
+    name: builder-ai
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn ai_service:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: REDIS_URL
+        fromService: {name: builder-redis, type: redis, property: connectionString}
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Conception not deployed in Phase 1 — ai_worker handles this
+      # gracefully (returns empty context, logs warning, keeps forging)
+      - key: CONCEPTION_SERVICE_URL
+        value: http://builder-conception:10000
+
+  # 3 — AI WORKER (Celery background worker)
+  #     The actual AI forge pipeline: Grok-3 → Claude → Gemini synthesis.
+  #     Runs as a Render "worker" (no public URL, no health check).
+  - type: worker
+    name: builder-ai-worker
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A ai_worker worker --loglevel=info --concurrency=2
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: REDIS_URL
+        fromService: {name: builder-redis, type: redis, property: connectionString}
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROK_API_KEY
+        sync: false
+      # Conception not deployed yet — worker fails gracefully
+      - key: CONCEPTION_SERVICE_URL
+        value: http://builder-conception:10000
+
+  # 4 — WORKSHOP SERVICE (FastAPI — equipment scanner requests)
+  #     Accepts photo uploads from the Streamlit app, dispatches
+  #     to workshop-worker for Gemini Vision analysis.
+  - type: web
+    name: builder-workshop
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn workshop_service:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: REDIS_URL
+        fromService: {name: builder-redis, type: redis, property: connectionString}
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+
+  # 5 — WORKSHOP WORKER (Celery — Gemini Vision background analysis)
+  - type: worker
+    name: builder-workshop-worker
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A workshop_worker worker --loglevel=info --concurrency=1
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: REDIS_URL
+        fromService: {name: builder-redis, type: redis, property: connectionString}
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: INTERNAL_API_KEY
+        sync: false
+
+  # 6 — BILLING SERVICE (FastAPI — Stripe webhook receiver)
+  #     THE MONEY SERVICE. Receives Stripe webhook events, creates
+  #     license keys, manages subscriptions. Must always be reachable.
+  - type: web
+    name: builder-billing
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn billing_service:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_STARTER
+        sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: STRIPE_PRICE_MASTER
+        sync: false
+      - key: STRIPE_PAYMENT_URL
+        sync: false
+      - key: AUTH_SERVICE_URL
+        value: http://builder-auth:10000
+
+  # 7 — EXPORT SERVICE (FastAPI — blueprint storage + downloads)
+  #     Serves the Vault, blueprint downloads (.md/.txt), and stats.
+  #     Called on almost every page load in the Streamlit app.
+  - type: web
+    name: builder-export
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn export_service:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: builder-db, property: connectionString}
+      - key: REDIS_URL
+        fromService: {name: builder-redis, type: redis, property: connectionString}
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+
+  # 8 — BUILDER APP (Streamlit — the user-facing UI)
+  #     This is what your customers see. The Forge, Vault, Scanner,
+  #     Conception DNA tab, and Arena Chat all live here.
+  #     Uses internal network URLs to talk to all backend services.
+  - type: web
+    name: builder-app
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port 10000 --server.address 0.0.0.0
+    healthCheckPath: /
+    envVars:
+      - key: AUTH_SERVICE_URL
+        value: http://builder-auth:10000
+      - key: AI_SERVICE_URL
+        value: http://builder-ai:10000
+      - key: WORKSHOP_SERVICE_URL
+        value: http://builder-workshop:10000
+      - key: EXPORT_SERVICE_URL
+        value: http://builder-export:10000
+      - key: BILLING_SERVICE_URL
+        value: http://builder-billing:10000
+      # Analytics not deployed in Phase 1 — app handles errors gracefully
+      - key: ANALYTICS_SERVICE_URL
+        value: http://builder-analytics:10000
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: STRIPE_PAYMENT_URL
+        sync: false

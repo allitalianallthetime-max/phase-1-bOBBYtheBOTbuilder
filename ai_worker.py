@@ -1,0 +1,436 @@
+"""
+AI WORKER — CELERY TASK RUNNER
+================================
+Runs the 3-agent forge pipeline: GROK-3 → CLAUDE-SONNET → GEMINI-FLASH
+Conception memory hooks (recall + absorb) are fully integrated.
+
+Merged from: ai_worker.py + ai_worker_patch.py
+Fixes applied:
+  - asyncio.ensure_future() bug: was called inside _forge_pipeline() which runs
+    inside loop.run_until_complete(). The future gets scheduled on the loop, but
+    the loop closes the moment run_until_complete() returns — absorb NEVER ran.
+    Fix: absorb is now awaited directly. It has its own 15s timeout and a full
+    try/except, so it cannot block or crash the task.
+  - Absorb payload updated to include `tokens_used` (was in patch, missing from
+    original) so Conception can learn which builds were expensive.
+  - Absorb response now logged with domain, patterns_extracted, and insight
+    fields (from patch) for better observability.
+  - Recall payload unified: both `context` and `inventory` keys sent so the
+    Conception service handles either version of the endpoint.
+  - Redundant `import httpx as _hx` inside async functions removed — httpx is
+    imported once at the top and reused.
+  - `run_in_executor` wrappers removed from httpx calls — httpx is async-native;
+    wrapping it in an executor is unnecessary overhead.
+"""
+
+import os
+import logging
+import asyncio
+import httpx
+from celery import Celery
+from contextlib import contextmanager
+import psycopg2.pool
+from anthropic import Anthropic
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("ai_worker")
+
+# ── CELERY + DB SETUP ──────────────────────────────────────────────────────────
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+celery_app = Celery("ai_worker", broker=REDIS_URL, backend=REDIS_URL)
+celery_app.conf.update(
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    result_expires=3600,
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
+)
+
+_db_url = os.getenv("DATABASE_URL")
+if not _db_url:
+    raise RuntimeError("DATABASE_URL is not set.")
+
+pool = psycopg2.pool.ThreadedConnectionPool(2, 8, _db_url)
+
+
+@contextmanager
+def get_db():
+    conn = pool.getconn()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
+
+
+# ── ENVIRONMENT ────────────────────────────────────────────────────────────────
+
+CONCEPTION_URL = os.getenv("CONCEPTION_SERVICE_URL", "http://builder-conception:10000")
+INT_KEY        = os.getenv("INTERNAL_API_KEY", "")
+ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+GEMINI_KEY     = os.getenv("GEMINI_API_KEY", "")
+GROK_KEY       = os.getenv("GROK_API_KEY", "")
+
+
+def _h() -> dict:
+    return {"x-internal-key": INT_KEY}
+
+
+# ── CONCEPTION MEMORY HOOKS ────────────────────────────────────────────────────
+
+async def _recall_conception_memory(user_email: str,
+                                    junk_desc: str,
+                                    project_type: str) -> str:
+    """
+    Pull Conception's accumulated memory before running the AI agents.
+    Returns a context string to prepend to every agent's system prompt.
+    If Conception is offline or empty → returns "" without crashing.
+
+    Sends both `context` and `inventory` keys for compatibility with
+    both v1 and v2 of the Conception memory endpoint.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{CONCEPTION_URL}/conception/recall",
+                json={
+                    "user_email":   user_email,
+                    "context":      f"{project_type}: {junk_desc}",  # v1 key
+                    "inventory":    junk_desc,                        # v2 key
+                    "project_type": project_type,
+                },
+                headers=_h(),
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            ctx = data.get("context_string") or data.get("context", "")
+            if ctx:
+                log.info("Conception recalled %d chars for %s", len(ctx), user_email)
+            return ctx
+    except Exception as e:
+        log.warning("Conception recall skipped (non-critical): %s", e)
+    return ""
+
+
+async def _absorb_into_conception(user_email: str,
+                                   junk_desc: str,
+                                   project_type: str,
+                                   blueprint: str,
+                                   grok_notes: str,
+                                   claude_notes: str,
+                                   build_id: int,
+                                   tokens_used: int) -> None:
+    """
+    Feed the finished blueprint into Conception for deep learning.
+    Awaited directly — has its own 15s timeout + full try/except,
+    so it cannot block or crash the forge task.
+
+    FIX: was previously called via asyncio.ensure_future(), which schedules
+    on the running loop. But the loop closes immediately after
+    run_until_complete() returns in forge_blueprint_task() — the coroutine
+    was being silently dropped and Conception never learned anything.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{CONCEPTION_URL}/conception/absorb",
+                json={
+                    "build_id":     build_id,
+                    "user_email":   user_email,
+                    "junk_desc":    junk_desc,
+                    "project_type": project_type,
+                    "blueprint":    blueprint,
+                    "grok_notes":   grok_notes,
+                    "claude_notes": claude_notes,
+                    "tokens_used":  tokens_used,   # added from patch
+                },
+                headers=_h(),
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            log.info(
+                "Conception absorbed build %d — domain: %s | patterns: %d | insight: %s",
+                build_id,
+                data.get("domain", "?"),
+                data.get("patterns_extracted", 0),
+                data.get("insight", ""),
+            )
+        else:
+            log.warning("Conception absorb returned HTTP %d for build %d",
+                        resp.status_code, build_id)
+    except Exception as e:
+        log.warning("Conception absorb failed (non-critical): %s", e)
+
+
+# ── AI AGENTS ──────────────────────────────────────────────────────────────────
+
+async def _run_grok(junk_desc: str,
+                    project_type: str,
+                    detail_level: str,
+                    conception_context: str) -> dict:
+    """GROK-3: structural engineering analysis."""
+    if not GROK_KEY:
+        log.warning("GROK_API_KEY not set — Grok offline.")
+        return {"analysis": "Grok offline — no API key configured.", "tokens": 0}
+
+    system = (
+        f"You are GROK-3, a structural engineering AI on AoC3P0 Builder Foundry.\n"
+        f"Analyze raw materials for engineering potential: material properties, "
+        f"connections, failure modes, and innovative uses. Detail level: {detail_level}.\n"
+        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+    )
+    try:
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            resp = await client.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROK_KEY}",
+                    "Content-Type":  "application/json",
+                },
+                json={
+                    "model": "grok-3",
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content":
+                            f"Inventory:\n{junk_desc}\n\n"
+                            f"Project: {project_type}\n\n"
+                            f"Conduct full structural analysis."},
+                    ],
+                    "max_tokens":  1200,
+                    "temperature": 0.3,
+                },
+            )
+        if resp.status_code == 200:
+            d = resp.json()
+            return {
+                "analysis": d["choices"][0]["message"]["content"],
+                "tokens":   d.get("usage", {}).get("total_tokens", 0),
+            }
+        log.error("Grok returned HTTP %d", resp.status_code)
+        return {"analysis": f"Grok error {resp.status_code}", "tokens": 0}
+    except Exception as e:
+        log.error("Grok failed: %s", e)
+        return {"analysis": f"Grok unavailable: {e}", "tokens": 0}
+
+
+async def _run_claude(junk_desc: str,
+                      project_type: str,
+                      grok_analysis: str,
+                      detail_level: str,
+                      conception_context: str) -> dict:
+    """CLAUDE-SONNET: full engineering blueprint from Grok's analysis."""
+    if not ANTHROPIC_KEY:
+        log.warning("ANTHROPIC_API_KEY not set — Claude offline.")
+        return {"blueprint": "Claude offline — no API key configured.", "tokens": 0}
+
+    detail_map = {
+        "Quick Sketch": "Concise 3-section blueprint, main steps only.",
+        "Standard":     "Complete blueprint with 5-7 sections, full assembly steps and specs.",
+        "Deep Dive":    (
+            "Exhaustive engineering document: all sections, tolerances, "
+            "alternatives, failure analysis, and testing procedures."
+        ),
+    }
+    system = (
+        "You are CLAUDE-SONNET, a senior robotics and mechanical engineer "
+        "on AoC3P0 Builder Foundry.\n"
+        "Using GROK-3's structural analysis, produce a complete engineering blueprint.\n"
+        "Sections: 1-Project Overview, 2-Materials Manifest, 3-Tools Required,\n"
+        "4-Assembly Sequence, 5-Technical Specifications, 6-Safety Notes,\n"
+        "7-Testing Procedure, 8-Optional Modifications.\n"
+        + detail_map.get(detail_level, detail_map["Standard"])
+        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+    )
+    try:
+        client = Anthropic(api_key=ANTHROPIC_KEY)
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=3000,
+            system=system,
+            messages=[{
+                "role":    "user",
+                "content": (
+                    f"GROK-3 ANALYSIS:\n{grok_analysis}\n\n"
+                    f"INVENTORY:\n{junk_desc}\n\n"
+                    f"PROJECT: {project_type}\n\n"
+                    f"Generate the complete blueprint."
+                ),
+            }],
+        )
+        return {
+            "blueprint": resp.content[0].text,
+            "tokens":    resp.usage.input_tokens + resp.usage.output_tokens,
+        }
+    except Exception as e:
+        log.error("Claude failed: %s", e)
+        return {"blueprint": f"Claude unavailable: {e}", "tokens": 0}
+
+
+async def _run_gemini(blueprint: str,
+                      project_type: str,
+                      conception_context: str) -> dict:
+    """GEMINI-FLASH: quality review, safety flags, cost/time estimates."""
+    _offline = {
+        "review_notes":        "Gemini offline — no API key configured.",
+        "safety_flags":        [],
+        "innovations":         [],
+        "difficulty_rating":   "Unknown",
+        "estimated_build_time": "Unknown",
+        "estimated_cost_usd":  "Unknown",
+        "tags":                [],
+        "conception_ready":    False,
+    }
+    if not GEMINI_KEY:
+        log.warning("GEMINI_API_KEY not set — Gemini offline.")
+        return {"notes": _offline, "tokens": 0}
+
+    import google.generativeai as genai
+    import json as _json
+
+    genai.configure(api_key=GEMINI_KEY)
+    model = genai.GenerativeModel(
+        "gemini-2.0-flash",
+        generation_config={"response_mime_type": "application/json"},
+    )
+    prompt = (
+        "Review this engineering blueprint. Return JSON only — no markdown, no preamble:\n"
+        "{\n"
+        '  "review_notes": "2-3 paragraph quality review",\n'
+        '  "safety_flags": ["list safety issues"],\n'
+        '  "innovations": ["2-3 creative improvements"],\n'
+        '  "difficulty_rating": "Beginner|Intermediate|Advanced|Expert",\n'
+        '  "estimated_build_time": "e.g. 4-6 hours",\n'
+        '  "estimated_cost_usd": "e.g. $15-$40",\n'
+        '  "tags": ["engineering domain tags"],\n'
+        '  "conception_ready": true or false\n'
+        "}\n"
+        + (f"CONCEPTION CONTEXT: {conception_context}\n" if conception_context else "")
+        + f"BLUEPRINT:\n{blueprint[:3000]}\n"
+        + f"PROJECT: {project_type}"
+    )
+    try:
+        resp = await model.generate_content_async(prompt)
+        notes = _json.loads(resp.text)
+        return {"notes": notes, "tokens": 0}
+    except Exception as e:
+        log.error("Gemini failed: %s", e)
+        return {"notes": {**_offline, "review_notes": f"Gemini error: {e}"}, "tokens": 0}
+
+
+# ── FORGE PIPELINE ─────────────────────────────────────────────────────────────
+
+async def _forge_pipeline(user_email: str,
+                           junk_desc: str,
+                           project_type: str,
+                           detail_level: str) -> dict:
+    # 0 — Recall Conception memory (context for all agents)
+    ctx = await _recall_conception_memory(user_email, junk_desc, project_type)
+
+    # 1 — Grok: structural analysis
+    log.info("Agent 1: Grok structural analysis")
+    grok_r   = await _run_grok(junk_desc, project_type, detail_level, ctx)
+    grok_out = grok_r["analysis"]
+
+    # 2 — Claude: engineering blueprint
+    log.info("Agent 2: Claude blueprint")
+    claude_r  = await _run_claude(junk_desc, project_type, grok_out, detail_level, ctx)
+    blueprint = claude_r["blueprint"]
+
+    # 3 — Gemini: quality review
+    log.info("Agent 3: Gemini review")
+    gemini_r = await _run_gemini(blueprint, project_type, ctx)
+    notes    = gemini_r["notes"] if isinstance(gemini_r["notes"], dict) else {}
+
+    total_tokens = grok_r["tokens"] + claude_r["tokens"]
+
+    # 4 — Save to database
+    build_id = None
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO builds
+                        (user_email, junk_desc, project_type, blueprint,
+                         grok_notes, claude_notes, tokens_used, conception_ready)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        user_email, junk_desc, project_type, blueprint,
+                        grok_out,
+                        notes.get("review_notes", ""),
+                        total_tokens,
+                        notes.get("conception_ready", False),
+                    ),
+                )
+                build_id = cur.fetchone()[0]
+                conn.commit()
+        log.info("Build %d saved to database.", build_id)
+    except Exception as e:
+        log.error("DB save failed: %s", e)
+
+    # 5 — Absorb into Conception (awaited directly — fixes ensure_future bug)
+    if build_id:
+        await _absorb_into_conception(
+            user_email    = user_email,
+            junk_desc     = junk_desc,
+            project_type  = project_type,
+            blueprint     = blueprint,
+            grok_notes    = grok_out,
+            claude_notes  = notes.get("review_notes", ""),
+            build_id      = build_id,
+            tokens_used   = total_tokens,
+        )
+
+    return {
+        "status":                  "complete",
+        "build_id":                build_id,
+        "user_email":              user_email,
+        "project_type":            project_type,
+        "detail_level":            detail_level,
+        "content":                 blueprint,
+        "grok_analysis":           grok_out,
+        "review_notes":            notes.get("review_notes", ""),
+        "safety_flags":            notes.get("safety_flags", []),
+        "innovations":             notes.get("innovations", []),
+        "difficulty":              notes.get("difficulty_rating", "Unknown"),
+        "build_time":              notes.get("estimated_build_time", "Unknown"),
+        "cost_estimate":           notes.get("estimated_cost_usd", "Unknown"),
+        "tags":                    notes.get("tags", []),
+        "conception_ready":        notes.get("conception_ready", False),
+        "tokens_used":             total_tokens,
+        "agents_used":             ["GROK-3", "CLAUDE-SONNET", "GEMINI-FLASH"],
+        "conception_context_used": bool(ctx),
+    }
+
+
+# ── CELERY TASK ────────────────────────────────────────────────────────────────
+
+@celery_app.task(
+    bind=True,
+    name="ai_worker.forge_blueprint_task",
+    max_retries=2,
+    soft_time_limit=180,
+    time_limit=200,
+)
+def forge_blueprint_task(self,
+                          user_email: str,
+                          junk_desc: str,
+                          project_type: str,
+                          detail_level: str = "Standard"):
+    log.info("Forge started: %s | %s | %s", user_email, project_type, detail_level)
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            _forge_pipeline(user_email, junk_desc, project_type, detail_level)
+        )
+    except Exception as e:
+        log.error("Forge pipeline failed: %s", e)
+        raise self.retry(exc=e, countdown=10)
+    finally:
+        loop.close()
