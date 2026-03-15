@@ -349,9 +349,18 @@ if st.session_state.active_tab == "forge":
                     st.error("The Round Table failed to reach consensus. Check your manifest.")
                     st.session_state.active_task = None
                 else:
-                    msg = data.get("message", "Agents are forging your blueprint...")
-                    st.info(f"⚙️ {msg}")
-                    time.sleep(2)
+                    msg = data.get("message", "Initializing Round Table protocols...")
+                    st.markdown(f"""
+                        <div style='background:#1E293B; padding:16px; border-radius:8px;
+                                    border-left:4px solid #FF4500; margin:8px 0;'>
+                          <div style='color:#FF4500; font-size:13px; font-weight:bold;
+                                      font-family:monospace; letter-spacing:1px;'>
+                            ROUND TABLE ACTIVE</div>
+                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
+                            {msg}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    time.sleep(3)
                     st.rerun()
         except Exception as e:
             st.warning(f"Polling interrupted: {e}")
