@@ -518,16 +518,23 @@ if st.session_state.active_tab == "forge":
 
                     # Display schematic drawing if available
                     if schematic and "<svg" in schematic and "</svg>" in schematic:
+                        import base64
                         # Sanitize: extract only the SVG portion
                         svg_start = schematic.find("<svg")
                         svg_end = schematic.rfind("</svg>") + 6
                         clean_svg = schematic[svg_start:svg_end]
 
+                        # Encode as base64 img — Streamlit strips raw SVG but renders img tags
+                        svg_b64 = base64.b64encode(clean_svg.encode("utf-8")).decode("utf-8")
+
                         st.markdown("#### 📐 TECHNICAL SCHEMATIC")
                         st.markdown(
                             f'<div style="background:white; padding:16px; '
                             f'border-radius:8px; border:1px solid #334155; '
-                            f'overflow-x:auto;">{clean_svg}</div>',
+                            f'overflow-x:auto; text-align:center;">'
+                            f'<img src="data:image/svg+xml;base64,{svg_b64}" '
+                            f'style="max-width:100%; height:auto;" />'
+                            f'</div>',
                             unsafe_allow_html=True
                         )
                         st.download_button(
