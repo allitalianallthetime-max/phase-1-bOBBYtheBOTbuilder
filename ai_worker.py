@@ -366,6 +366,80 @@ async def _run_gemini(blueprint: str,
         return {"notes": {**_offline, "review_notes": f"Gemini error: {e}"}, "tokens": 0}
 
 
+# ── SCHEMATIC GENERATOR ───────────────────────────────────────────────────────
+
+async def _generate_schematic(blueprint: str,
+                               project_type: str,
+                               junk_desc: str) -> str:
+    """Generate an SVG technical schematic from the blueprint."""
+    if not ANTHROPIC_KEY:
+        log.warning("ANTHROPIC_API_KEY not set — schematic generation skipped.")
+        return ""
+
+    system = (
+        "You are a technical illustrator. Generate a COMPLETE, VALID SVG technical "
+        "schematic drawing. Return ONLY the raw SVG code — no markdown, no ```svg tags, "
+        "no explanation. Just the SVG starting with <svg and ending with </svg>.\n\n"
+        "DRAWING REQUIREMENTS:\n"
+        "- Canvas: 800x600 pixels with a light grid background (10px spacing)\n"
+        "- Title block in top-left with project name and scale\n"
+        "- Main view: Top-down OR side-view schematic of the assembled project\n"
+        "- Each major component drawn as a labeled rectangle or shape with:\n"
+        "  - Component name inside or next to it\n"
+        "  - Source label (which inventory item it came from) in smaller italic text\n"
+        "  - Dimension lines with measurements where relevant\n"
+        "- Use these colors:\n"
+        "  - #2563EB (blue) for structural/frame components\n"
+        "  - #DC2626 (red) for motors and actuators\n"
+        "  - #16A34A (green) for electronics and control systems\n"
+        "  - #9333EA (purple) for sensors\n"
+        "  - #D97706 (amber) for belts, chains, and mechanical linkages\n"
+        "  - #1E293B (dark) for text and dimension lines\n"
+        "- Include a color-coded legend in the bottom-right corner\n"
+        "- Use dashed lines to show connections between components\n"
+        "- Add dimension arrows with approximate measurements\n"
+        "- Professional engineering drawing style — clean lines, clear labels\n"
+        "- All text must be readable (minimum 10px font size)\n"
+    )
+
+    try:
+        client = Anthropic(api_key=ANTHROPIC_KEY)
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Create an SVG technical schematic for this project.\n\n"
+                    f"PROJECT: {project_type}\n\n"
+                    f"INVENTORY ITEMS USED:\n{junk_desc}\n\n"
+                    f"BLUEPRINT SUMMARY (focus on the Materials Manifest and "
+                    f"Assembly Sequence sections):\n{blueprint[:2500]}\n\n"
+                    f"Draw the assembled project showing where each harvested "
+                    f"component goes. Label every part with its name and which "
+                    f"inventory item it came from."
+                ),
+            }],
+        )
+        svg = resp.content[0].text.strip()
+        # Clean up in case the AI wrapped it in markdown
+        if "```" in svg:
+            svg = svg.split("```")[1] if "```" in svg else svg
+            if svg.startswith("svg"):
+                svg = svg[3:]
+            svg = svg.strip()
+        # Validate it starts with <svg
+        if not svg.startswith("<svg"):
+            log.warning("Schematic generation returned non-SVG content.")
+            return ""
+        log.info("Schematic SVG generated: %d chars", len(svg))
+        return svg
+    except Exception as e:
+        log.error("Schematic generation failed: %s", e)
+        return ""
+
+
 # ── FORGE PIPELINE ─────────────────────────────────────────────────────────────
 
 async def _forge_pipeline(user_email: str,
@@ -389,6 +463,10 @@ async def _forge_pipeline(user_email: str,
     log.info("Agent 3: Gemini review")
     gemini_r = await _run_gemini(blueprint, project_type, ctx)
     notes    = gemini_r["notes"] if isinstance(gemini_r["notes"], dict) else {}
+
+    # 4 — Schematic: technical drawing
+    log.info("Agent 4: Schematic generation")
+    schematic_svg = await _generate_schematic(blueprint, project_type, junk_desc)
 
     total_tokens = grok_r["tokens"] + claude_r["tokens"]
 
@@ -439,6 +517,7 @@ async def _forge_pipeline(user_email: str,
         "project_type":            project_type,
         "detail_level":            detail_level,
         "content":                 blueprint,
+        "schematic_svg":           schematic_svg,
         "grok_analysis":           grok_out,
         "review_notes":            notes.get("review_notes", ""),
         "safety_flags":            notes.get("safety_flags", []),
