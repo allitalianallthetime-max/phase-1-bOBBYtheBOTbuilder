@@ -178,9 +178,20 @@ async def _run_grok(junk_desc: str,
         return {"analysis": "Grok offline — no API key configured.", "tokens": 0}
 
     system = (
-        f"You are GROK-3, a structural engineering AI on AoC3P0 Builder Foundry.\n"
-        f"Analyze raw materials for engineering potential: material properties, "
-        f"connections, failure modes, and innovative uses. Detail level: {detail_level}.\n"
+        f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
+        f"ABSOLUTE RULE: The user is building ONLY from the inventory they listed below. "
+        f"They are NOT buying new parts. Your job is to analyze EACH SPECIFIC ITEM they "
+        f"have and explain exactly how it can be repurposed for their project.\n\n"
+        f"For EVERY item in the inventory:\n"
+        f"1. Identify what useful components it contains (motors, frames, wiring, sensors, etc.)\n"
+        f"2. Explain the engineering properties of those components\n"
+        f"3. Describe exactly how each component maps to the project goal\n"
+        f"4. Flag any items that genuinely cannot be used and explain why\n\n"
+        f"Think like a resourceful engineer who builds from what's available — not a "
+        f"catalog shopper. If someone lists a treadmill, you see a DC motor, a steel frame, "
+        f"a belt drive, an incline actuator, a control board, and wiring. If they list a "
+        f"computer, you see fans, power supply, heat sinks, a processing brain, and a metal chassis.\n\n"
+        f"Detail level: {detail_level}.\n"
         + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
     )
     try:
@@ -196,11 +207,12 @@ async def _run_grok(junk_desc: str,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user",   "content":
-                            f"Inventory:\n{junk_desc}\n\n"
-                            f"Project: {project_type}\n\n"
-                            f"Conduct full structural analysis."},
+                            f"INVENTORY (this is ALL I have — I am NOT buying new parts):\n{junk_desc}\n\n"
+                            f"PROJECT GOAL: {project_type}\n\n"
+                            f"Break down every item in my inventory and tell me exactly "
+                            f"what useful parts I can harvest from each one for this project."},
                     ],
-                    "max_tokens":  1200,
+                    "max_tokens":  1500,
                     "temperature": 0.3,
                 },
             )
@@ -237,11 +249,24 @@ async def _run_claude(junk_desc: str,
     }
     system = (
         "You are CLAUDE-SONNET, a senior robotics and mechanical engineer "
-        "on AoC3P0 Builder Foundry.\n"
-        "Using GROK-3's structural analysis, produce a complete engineering blueprint.\n"
-        "Sections: 1-Project Overview, 2-Materials Manifest, 3-Tools Required,\n"
-        "4-Assembly Sequence, 5-Technical Specifications, 6-Safety Notes,\n"
-        "7-Testing Procedure, 8-Optional Modifications.\n"
+        "on AoC3P0 Builder Foundry.\n\n"
+        "ABSOLUTE RULE: The Materials Manifest section must be built ENTIRELY from "
+        "components harvested from the user's inventory. Do NOT list generic parts "
+        "to buy. Instead, for each material needed, specify which inventory item it "
+        "comes from. Example: 'Drive Motor: Harvested from treadmill (2.5HP DC motor, "
+        "model X)' or 'Structural Frame: Repurposed from treadmill steel base.'\n\n"
+        "The ONLY exception is basic consumables (fasteners, wires, adhesives, lubricant) "
+        "which you may list separately under 'Additional Consumables Needed.'\n\n"
+        "Using GROK-3's structural analysis of the inventory, produce a complete "
+        "engineering blueprint with these sections:\n"
+        "1-Project Overview (must explain the creative repurposing strategy),\n"
+        "2-Materials Manifest (ONLY from inventory — say where each part comes from),\n"
+        "3-Tools Required,\n"
+        "4-Assembly Sequence (include disassembly/harvesting steps first),\n"
+        "5-Technical Specifications,\n"
+        "6-Safety Notes,\n"
+        "7-Testing Procedure,\n"
+        "8-Optional Modifications.\n\n"
         + detail_map.get(detail_level, detail_map["Standard"])
         + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
     )
@@ -249,15 +274,17 @@ async def _run_claude(junk_desc: str,
         client = Anthropic(api_key=ANTHROPIC_KEY)
         resp = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=3000,
+            max_tokens=4000,
             system=system,
             messages=[{
                 "role":    "user",
                 "content": (
-                    f"GROK-3 ANALYSIS:\n{grok_analysis}\n\n"
-                    f"INVENTORY:\n{junk_desc}\n\n"
-                    f"PROJECT: {project_type}\n\n"
-                    f"Generate the complete blueprint."
+                    f"GROK-3 ANALYSIS OF MY INVENTORY:\n{grok_analysis}\n\n"
+                    f"MY INVENTORY (this is ALL I have — do NOT add parts I don't own):\n{junk_desc}\n\n"
+                    f"PROJECT GOAL: {project_type}\n\n"
+                    f"Generate a complete blueprint using ONLY parts from my inventory. "
+                    f"Every item in the Materials Manifest must reference which inventory "
+                    f"item it was harvested from."
                 ),
             }],
         )
@@ -297,14 +324,17 @@ async def _run_gemini(blueprint: str,
         generation_config={"response_mime_type": "application/json"},
     )
     prompt = (
-        "Review this engineering blueprint. Return JSON only — no markdown, no preamble:\n"
+        "Review this engineering blueprint. The blueprint MUST use parts harvested from "
+        "the user's actual inventory — not generic store-bought materials. Check whether "
+        "the blueprint actually references the inventory items. Return JSON only — no markdown, no preamble:\n"
         "{\n"
-        '  "review_notes": "2-3 paragraph quality review",\n'
+        '  "review_notes": "2-3 paragraph quality review — specifically note whether the blueprint creatively uses the actual inventory or just lists generic parts",\n'
+        '  "inventory_usage_score": "0-100 — what percentage of inventory items were actually used in the blueprint",\n'
         '  "safety_flags": ["list safety issues"],\n'
-        '  "innovations": ["2-3 creative improvements"],\n'
+        '  "innovations": ["2-3 creative ways to better use the inventory items"],\n'
         '  "difficulty_rating": "Beginner|Intermediate|Advanced|Expert",\n'
         '  "estimated_build_time": "e.g. 4-6 hours",\n'
-        '  "estimated_cost_usd": "e.g. $15-$40",\n'
+        '  "estimated_cost_usd": "e.g. $15-$40 for consumables only since parts come from inventory",\n'
         '  "tags": ["engineering domain tags"],\n'
         '  "conception_ready": true or false\n'
         "}\n"
