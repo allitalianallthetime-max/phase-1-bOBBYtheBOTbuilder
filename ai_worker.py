@@ -394,7 +394,7 @@ async def _run_gemini(blueprint: str,
 
     genai.configure(api_key=GEMINI_KEY)
     model = genai.GenerativeModel(
-        "gemini-2.0-flash",
+        "gemini-2.5-flash",
         generation_config={"response_mime_type": "application/json"},
     )
     prompt = (
