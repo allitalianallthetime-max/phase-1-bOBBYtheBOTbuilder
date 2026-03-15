@@ -23,8 +23,10 @@ WORKSHOP_URL  = os.getenv("WORKSHOP_SERVICE_URL",   "http://localhost:8003")
 EXPORT_URL    = os.getenv("EXPORT_SERVICE_URL",     "http://localhost:8004")
 ANALYTICS_URL = os.getenv("ANALYTICS_SERVICE_URL",  "http://localhost:8005")
 BILLING_URL   = os.getenv("BILLING_SERVICE_URL",    "http://localhost:8006")
-STRIPE_URL    = os.getenv("STRIPE_PAYMENT_URL",     "#")
-INTERNAL_KEY  = os.getenv("INTERNAL_API_KEY",       "")
+STRIPE_STARTER = os.getenv("STRIPE_URL_STARTER",    "#")
+STRIPE_PRO     = os.getenv("STRIPE_URL_PRO",        "#")
+STRIPE_MASTER  = os.getenv("STRIPE_URL_MASTER",     "#")
+INTERNAL_KEY   = os.getenv("INTERNAL_API_KEY",       "")
 
 def _h():
     return {"x-internal-key": INTERNAL_KEY}
@@ -91,8 +93,42 @@ if not st.session_state.logged_in:
                         except Exception as e:
                             st.error(f"Auth service offline: {e}")
         with col_b:
-            st.link_button("GET A LICENSE", STRIPE_URL, use_container_width=True)
+            st.link_button("GET A LICENSE", STRIPE_STARTER, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── PRICING TIERS ──
+        st.markdown("<br>", unsafe_allow_html=True)
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            st.markdown("""
+                <div style='background:#1E293B; padding:18px; border-radius:8px;
+                            border:1px solid #94A3B8; text-align:center;'>
+                <div style='color:#94A3B8; font-size:12px; font-weight:bold;'>STARTER</div>
+                <div style='color:white; font-size:28px; font-weight:bold;'>$25<span style='font-size:14px;color:#94A3B8;'>/mo</span></div>
+                <div style='color:#64748B; font-size:12px; margin-top:4px;'>25 builds/month</div>
+                </div>
+            """, unsafe_allow_html=True)
+            st.link_button("⚡ STARTER", STRIPE_STARTER, use_container_width=True)
+        with t2:
+            st.markdown("""
+                <div style='background:#1E293B; padding:18px; border-radius:8px;
+                            border:1px solid #FF4500; text-align:center;'>
+                <div style='color:#FF4500; font-size:12px; font-weight:bold;'>PRO ★</div>
+                <div style='color:white; font-size:28px; font-weight:bold;'>$100<span style='font-size:14px;color:#94A3B8;'>/mo</span></div>
+                <div style='color:#64748B; font-size:12px; margin-top:4px;'>100 builds/month</div>
+                </div>
+            """, unsafe_allow_html=True)
+            st.link_button("🔥 PRO", STRIPE_PRO, use_container_width=True)
+        with t3:
+            st.markdown("""
+                <div style='background:#1E293B; padding:18px; border-radius:8px;
+                            border:1px solid #FFD700; text-align:center;'>
+                <div style='color:#FFD700; font-size:12px; font-weight:bold;'>MASTER</div>
+                <div style='color:white; font-size:28px; font-weight:bold;'>$999<span style='font-size:14px;color:#94A3B8;'>/yr</span></div>
+                <div style='color:#64748B; font-size:12px; margin-top:4px;'>Unlimited builds</div>
+                </div>
+            """, unsafe_allow_html=True)
+            st.link_button("👑 MASTER", STRIPE_MASTER, use_container_width=True)
     st.stop()
 
 # ─────────────────────────────────────────────
@@ -154,13 +190,16 @@ with st.sidebar:
         """, unsafe_allow_html=True)
         if pct >= 1.0:
             st.error("Quota exhausted.")
-            st.link_button("UPGRADE", STRIPE_URL, use_container_width=True)
+            if st.session_state.tier == "starter":
+                st.link_button("UPGRADE TO PRO", STRIPE_PRO, use_container_width=True)
+            elif st.session_state.tier == "pro":
+                st.link_button("UPGRADE TO MASTER", STRIPE_MASTER, use_container_width=True)
     except Exception:
         pass
 
     st.markdown("---")
     st.markdown("### 🛠️ MAINTENANCE FUND")
-    st.markdown(f"<a href='{STRIPE_URL}' target='_blank' style='color:#FF4500;'>☕ TIP THE TECH CUP</a>",
+    st.markdown(f"<a href='{STRIPE_STARTER}' target='_blank' style='color:#FF4500;'>☕ TIP THE TECH CUP</a>",
                 unsafe_allow_html=True)
     st.markdown("---")
 
