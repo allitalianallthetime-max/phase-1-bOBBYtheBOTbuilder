@@ -287,6 +287,25 @@ if st.session_state.active_tab == "forge":
                     st.markdown("#### ✅ SYNTHESIS COMPLETE")
                     blueprint = data.get("result", {}).get("content", "")
                     build_id  = data.get("result", {}).get("build_id", "")
+                    schematic = data.get("result", {}).get("schematic_svg", "")
+
+                    # Display schematic drawing if available
+                    if schematic and schematic.startswith("<svg"):
+                        st.markdown("#### 📐 TECHNICAL SCHEMATIC")
+                        st.markdown(
+                            f'<div style="background:white; padding:16px; '
+                            f'border-radius:8px; border:1px solid #334155; '
+                            f'overflow-x:auto;">{schematic}</div>',
+                            unsafe_allow_html=True
+                        )
+                        st.download_button(
+                            "📐 DOWNLOAD SCHEMATIC (.svg)",
+                            data=schematic,
+                            file_name=f"schematic_{build_id or 'draft'}.svg",
+                            mime="image/svg+xml",
+                            use_container_width=True
+                        )
+                        st.markdown("---")
 
                     st.markdown(blueprint)
 
