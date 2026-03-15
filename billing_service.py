@@ -159,17 +159,19 @@ async def stripe_webhook(request: Request):
 
     # ── EVENT HANDLERS ──
 
-    if event_type == "checkout.session.completed":
-        # New purchase: create a license automatically
-        customer_id = data_obj.get("customer")
-        email       = data_obj.get("customer_details", {}).get("email", "")
-        name        = data_obj.get("customer_details", {}).get("name", "")
+   if event_type == "checkout.session.completed":
+        customer_id = data_obj.get("customer") or ""
+        email       = (data_obj.get("customer_details") or {}).get("email") or ""
+        name        = (data_obj.get("customer_details") or {}).get("name") or ""
         price_id    = ""
 
-        # Pull price ID from line items if available
-        line_items = data_obj.get("line_items", {}).get("data", [])
+        line_items = (data_obj.get("line_items") or {})
+        if isinstance(line_items, dict):
+            line_items = line_items.get("data", [])
+        else:
+            line_items = []
         if line_items:
-            price_id = line_items[0].get("price", {}).get("id", "")
+            price_id = ((line_items[0].get("price") or {}).get("id") or "")
 
         tier, _, days = _tier_for_price(price_id)
 
