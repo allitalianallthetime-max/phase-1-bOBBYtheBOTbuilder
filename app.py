@@ -33,7 +33,6 @@ def _h():
 
 if BUILDER_CSS:
     st.markdown(BUILDER_CSS, unsafe_allow_html=True)
-st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
 
 # ── SESSION STATE ──
 for k, v in {
@@ -50,19 +49,271 @@ for k, v in {
         st.session_state[k] = v
 
 # ─────────────────────────────────────────────
-# AUTH GATE
+# LANDING PAGE + AUTH GATE
 # ─────────────────────────────────────────────
 if not st.session_state.logged_in:
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c2:
+
+    # ── HERO SECTION ──
+    st.markdown("""
+        <div style='text-align:center; padding:40px 20px 20px;'>
+          <div style='font-size:64px; margin-bottom:8px;'>&#9881;&#65039;</div>
+          <h1 style='color:#FF4500; font-size:42px; margin:0; letter-spacing:2px;'>
+            THE BUILDER FOUNDRY</h1>
+          <p style='color:#94A3B8; font-size:20px; margin-top:8px; max-width:700px;
+                    margin-left:auto; margin-right:auto;'>
+            Turn junk into genius.<br>
+            AI-powered engineering blueprints from the parts you already have.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── PROBLEM → SOLUTION ──
+    st.markdown("""
+        <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
+          <div style='display:flex; gap:20px; flex-wrap:wrap; justify-content:center;'>
+            <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
+                        padding:24px; flex:1; min-width:280px; max-width:400px;'>
+              <div style='color:#EF4444; font-size:13px; font-weight:bold;
+                          letter-spacing:2px; margin-bottom:8px;'>THE PROBLEM</div>
+              <div style='color:#E2E8F0; font-size:16px; line-height:1.6;'>
+                You have a garage full of old equipment, scrap parts, and broken machines.
+                Every other AI tool tells you to <span style='color:#EF4444;'>go buy new parts</span>.
+                That defeats the whole point.</div>
+            </div>
+            <div style='background:#1E293B; border:1px solid #FF4500; border-radius:8px;
+                        padding:24px; flex:1; min-width:280px; max-width:400px;'>
+              <div style='color:#FF4500; font-size:13px; font-weight:bold;
+                          letter-spacing:2px; margin-bottom:8px;'>THE SOLUTION</div>
+              <div style='color:#E2E8F0; font-size:16px; line-height:1.6;'>
+                Tell us what you <strong>have</strong> and what you want to <strong>build</strong>.
+                Three AI agents tear apart your inventory, identify every harvestable component,
+                and generate a complete blueprint using
+                <span style='color:#FF4500;'>only your parts</span>.</div>
+            </div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── HOW IT WORKS ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>How The Round Table Works</h2>
+          <p style='color:#64748B; font-size:14px;'>Three AI agents collaborate on every blueprint</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    a1, a2, a3 = st.columns(3)
+    with a1:
         st.markdown("""
-            <div style='background:#1E293B; padding:28px; border-radius:8px;
-                        border:1px solid #FF4500;'>
-            <h3 style='text-align:center; color:#FF4500;'>RESTRICTED ACCESS</h3>
-            <p style='text-align:center; color:#94A3B8; font-size:14px;'>
-            Enter your Foundry License Key to access the Round Table.</p>
+            <div style='background:#1E293B; border-radius:8px; padding:24px;
+                        border-top:3px solid #F97316; text-align:center; min-height:220px;'>
+              <div style='font-size:32px; margin-bottom:8px;'>&#128295;</div>
+              <div style='color:#F97316; font-weight:bold; font-size:16px;'>GROK-3</div>
+              <div style='color:#64748B; font-size:11px; letter-spacing:1px;
+                          margin-bottom:12px;'>JUNKYARD ANALYST</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
+                Tears apart every item in your inventory. Identifies motors, frames,
+                wiring, bearings, circuit boards — everything harvestable.</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with a2:
+        st.markdown("""
+            <div style='background:#1E293B; border-radius:8px; padding:24px;
+                        border-top:3px solid #3B82F6; text-align:center; min-height:220px;'>
+              <div style='font-size:32px; margin-bottom:8px;'>&#128208;</div>
+              <div style='color:#3B82F6; font-weight:bold; font-size:16px;'>CLAUDE SONNET</div>
+              <div style='color:#64748B; font-size:11px; letter-spacing:1px;
+                          margin-bottom:12px;'>BLUEPRINT ENGINEER</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
+                Writes the full engineering blueprint using only the parts Grok identified.
+                Every material traces back to your inventory. Plus a technical schematic.</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with a3:
+        st.markdown("""
+            <div style='background:#1E293B; border-radius:8px; padding:24px;
+                        border-top:3px solid #10B981; text-align:center; min-height:220px;'>
+              <div style='font-size:32px; margin-bottom:8px;'>&#128300;</div>
+              <div style='color:#10B981; font-weight:bold; font-size:16px;'>GEMINI FLASH</div>
+              <div style='color:#64748B; font-size:11px; letter-spacing:1px;
+                          margin-bottom:12px;'>QUALITY INSPECTOR</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
+                Reviews the blueprint for safety, rates difficulty, estimates build time,
+                and scores how well it actually used your inventory.</div>
+            </div>
         """, unsafe_allow_html=True)
 
+    # ── EXAMPLE OUTPUT ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>What You Get</h2>
+          <p style='color:#64748B; font-size:14px;'>Real output from a real forge</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+        <div style='max-width:900px; margin:0 auto;'>
+          <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
+                      padding:24px; margin-bottom:16px;'>
+            <div style='color:#64748B; font-size:11px; letter-spacing:2px;
+                        margin-bottom:4px;'>EXAMPLE INPUT</div>
+            <div style='color:#F97316; font-size:14px; font-weight:bold;
+                        margin-bottom:4px;'>PROJECT: Automated Cat Litter Robot</div>
+            <div style='color:#94A3B8; font-size:13px;'>
+              INVENTORY: Old treadmill with auto incline + Refurbished Dell OptiPlex computer</div>
+          </div>
+          <div style='background:#1E293B; border:1px solid #FF4500; border-radius:8px;
+                      padding:24px;'>
+            <div style='color:#FF4500; font-size:11px; letter-spacing:2px;
+                        margin-bottom:12px;'>EXAMPLE OUTPUT</div>
+            <div style='color:#E2E8F0; font-size:14px; line-height:1.7;'>
+              <strong style='color:#3B82F6;'>&#9654; Drive Motor:</strong>
+              Harvested from treadmill (1-2HP DC motor with variable speed control)<br>
+              <strong style='color:#3B82F6;'>&#9654; Conveyor Belt:</strong>
+              Repurposed treadmill wide belt, modified with sifting perforations<br>
+              <strong style='color:#3B82F6;'>&#9654; Structural Frame:</strong>
+              Cut and welded sections from treadmill steel frame<br>
+              <strong style='color:#3B82F6;'>&#9654; Tilting Mechanism:</strong>
+              Linear actuator harvested from treadmill auto-incline system<br>
+              <strong style='color:#3B82F6;'>&#9654; Control Computer:</strong>
+              Dell OptiPlex i5 programmed for cycle timing and automation<br>
+              <strong style='color:#3B82F6;'>&#9654; Ventilation:</strong>
+              Computer case fans repurposed for odor management<br>
+              <strong style='color:#3B82F6;'>&#9654; Electronics Enclosure:</strong>
+              Modified Dell computer chassis<br>
+            </div>
+            <div style='color:#10B981; font-size:13px; margin-top:12px; padding-top:12px;
+                        border-top:1px solid #334155;'>
+              &#10003; Technical SVG schematic included &nbsp;&nbsp;
+              &#10003; Full assembly sequence &nbsp;&nbsp;
+              &#10003; Safety notes &nbsp;&nbsp;
+              &#10003; Testing procedures &nbsp;&nbsp;
+              &#10003; Downloadable .md and .txt</div>
+            <div style='color:#F59E0B; font-size:12px; margin-top:8px;'>
+              Estimated commercial equivalent: $2,500 - $4,000</div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── FEATURES LIST ──
+    st.markdown("""
+        <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
+          <div style='display:flex; gap:16px; flex-wrap:wrap; justify-content:center;'>
+            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
+                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
+              <div style='font-size:24px;'>&#128208;</div>
+              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
+                Technical Schematics</div>
+              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
+                Auto-generated SVG engineering drawings with every blueprint</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
+                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
+              <div style='font-size:24px;'>&#128248;</div>
+              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
+                Equipment Scanner</div>
+              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
+                Upload a photo. Gemini Vision identifies every component automatically.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
+                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
+              <div style='font-size:24px;'>&#129504;</div>
+              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
+                Conception DNA</div>
+              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
+                Every blueprint trains our AI. The more you build, the smarter it gets.</div>
+            </div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── PRICING ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>Choose Your Clearance Level</h2>
+          <p style='color:#64748B; font-size:14px;'>Every tier includes full Round Table access</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        st.markdown("""
+            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+                        border:1px solid #94A3B8; text-align:center;'>
+              <div style='color:#94A3B8; font-size:12px; font-weight:bold;
+                          letter-spacing:2px;'>STARTER</div>
+              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
+                $25<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
+              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
+                25 blueprint builds per month<br>
+                Full Round Table access<br>
+                Technical schematics<br>
+                Equipment scanner<br>
+                Blueprint downloads</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("⚡ GET STARTER", STRIPE_STARTER, use_container_width=True)
+    with t2:
+        st.markdown("""
+            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+                        border:2px solid #FF4500; text-align:center;
+                        box-shadow:0 0 20px rgba(255,69,0,0.15);'>
+              <div style='color:#FF4500; font-size:12px; font-weight:bold;
+                          letter-spacing:2px;'>PRO &#9733; MOST POPULAR</div>
+              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
+                $100<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
+              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
+                100 blueprint builds per month<br>
+                Everything in Starter<br>
+                Priority processing<br>
+                Conception DNA insights<br>
+                Best value per build</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("🔥 GET PRO", STRIPE_PRO, use_container_width=True)
+    with t3:
+        st.markdown("""
+            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+                        border:1px solid #FFD700; text-align:center;'>
+              <div style='color:#FFD700; font-size:12px; font-weight:bold;
+                          letter-spacing:2px;'>MASTER</div>
+              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
+                $999<span style='font-size:16px; color:#94A3B8;'>/yr</span></div>
+              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
+                Unlimited builds forever<br>
+                Everything in Pro<br>
+                Schools &amp; makerspaces<br>
+                Direct Conception access<br>
+                Annual lock-in savings</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("👑 GET MASTER", STRIPE_MASTER, use_container_width=True)
+
+    # ── THE STORY ──
+    st.markdown("""
+        <div style='max-width:700px; margin:40px auto; text-align:center; padding:0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:24px; margin-bottom:12px;'>Built From Scraps. Literally.</h2>
+          <p style='color:#94A3B8; font-size:14px; line-height:1.8;'>
+            The Builder Foundry was created by a self-taught developer who pieces together
+            computers from parts and builds things from scrap. No CS degree. No funding.
+            Just a passion for engineering and a refusal to stop learning.<br><br>
+            This is Phase 1 of <strong style='color:#FF4500;'>Conception</strong> —
+            an advanced AI being built to learn from every blueprint, protect families,
+            run businesses, and eventually walk in a physical body.<br><br>
+            Every blueprint you forge makes Conception smarter.
+          </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── LOGIN SECTION ──
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align:center; margin-bottom:12px;'>
+          <h3 style='color:#FF4500;'>Already Have a License?</h3>
+        </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
         license_key = st.text_input("License Key", type="password",
                                     placeholder="BOB-XXXX-XXXX-XXXX")
         col_a, col_b = st.columns(2)
@@ -94,42 +345,18 @@ if not st.session_state.logged_in:
                             st.error(f"Auth service offline: {e}")
         with col_b:
             st.link_button("GET A LICENSE", STRIPE_STARTER, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
-        # ── PRICING TIERS ──
-        st.markdown("<br>", unsafe_allow_html=True)
-        t1, t2, t3 = st.columns(3)
-        with t1:
-            st.markdown("""
-                <div style='background:#1E293B; padding:18px; border-radius:8px;
-                            border:1px solid #94A3B8; text-align:center;'>
-                <div style='color:#94A3B8; font-size:12px; font-weight:bold;'>STARTER</div>
-                <div style='color:white; font-size:28px; font-weight:bold;'>$25<span style='font-size:14px;color:#94A3B8;'>/mo</span></div>
-                <div style='color:#64748B; font-size:12px; margin-top:4px;'>25 builds/month</div>
-                </div>
-            """, unsafe_allow_html=True)
-            st.link_button("⚡ STARTER", STRIPE_STARTER, use_container_width=True)
-        with t2:
-            st.markdown("""
-                <div style='background:#1E293B; padding:18px; border-radius:8px;
-                            border:1px solid #FF4500; text-align:center;'>
-                <div style='color:#FF4500; font-size:12px; font-weight:bold;'>PRO ★</div>
-                <div style='color:white; font-size:28px; font-weight:bold;'>$100<span style='font-size:14px;color:#94A3B8;'>/mo</span></div>
-                <div style='color:#64748B; font-size:12px; margin-top:4px;'>100 builds/month</div>
-                </div>
-            """, unsafe_allow_html=True)
-            st.link_button("🔥 PRO", STRIPE_PRO, use_container_width=True)
-        with t3:
-            st.markdown("""
-                <div style='background:#1E293B; padding:18px; border-radius:8px;
-                            border:1px solid #FFD700; text-align:center;'>
-                <div style='color:#FFD700; font-size:12px; font-weight:bold;'>MASTER</div>
-                <div style='color:white; font-size:28px; font-weight:bold;'>$999<span style='font-size:14px;color:#94A3B8;'>/yr</span></div>
-                <div style='color:#64748B; font-size:12px; margin-top:4px;'>Unlimited builds</div>
-                </div>
-            """, unsafe_allow_html=True)
-            st.link_button("👑 MASTER", STRIPE_MASTER, use_container_width=True)
+    # ── FOOTER ──
+    st.markdown("""
+        <div style='text-align:center; padding:40px 0 20px; color:#475569; font-size:12px;'>
+          AoC3P0 Systems &nbsp;|&nbsp; The Builder Foundry &nbsp;|&nbsp; Conception DNA Architecture<br>
+          <span style='color:#334155;'>bobtherobotbuilder.com</span>
+        </div>
+    """, unsafe_allow_html=True)
     st.stop()
+
+# ── Show forge header only for logged-in users ──
+st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # SIDEBAR
