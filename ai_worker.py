@@ -196,10 +196,29 @@ async def _run_grok(junk_desc: str,
         f"a belt drive, an incline actuator, a control board, and wiring. If they list a "
         f"computer, you see fans, power supply, heat sinks, a processing brain, and a metal chassis.\n\n"
         f"Detail level: {detail_level}.\n"
+        + ({
+            "Standard": "Identify major harvestable components from each item.",
+            "Industrial": (
+                "For each component: specify exact voltages, current ratings, "
+                "torque values, dimensions, weight, and material grade where possible. "
+                "Calculate mechanical advantage of any gear/belt systems. "
+                "Identify wire gauges and connector types."
+            ),
+            "Experimental": (
+                "Maximum analysis depth. For each component: exact electrical specs "
+                "(voltage, current, impedance), mechanical specs (torque, RPM, gear ratio, "
+                "material tensile strength), thermal specs (max operating temp, thermal "
+                "conductivity of housings), and dimensional specs (shaft diameter, bearing "
+                "bore, frame wall thickness). Identify hidden value — capacitors, rare earth "
+                "magnets in motors, precision machined surfaces, high-quality bearings, "
+                "specialized alloys. Estimate component remaining life span based on age "
+                "and typical duty cycles."
+            ),
+        }.get(detail_level, "") + "\n")
         + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
     )
     try:
-        async with httpx.AsyncClient(timeout=40.0) as client:
+        async with httpx.AsyncClient(timeout={"Standard": 40.0, "Industrial": 60.0, "Experimental": 80.0}.get(detail_level, 40.0)) as client:
             resp = await client.post(
                 "https://api.x.ai/v1/chat/completions",
                 headers={
@@ -219,7 +238,7 @@ async def _run_grok(junk_desc: str,
                             f"Break down every item in my inventory and tell me exactly "
                             f"what useful parts I can harvest from each one to build the project goal."},
                     ],
-                    "max_tokens":  1500,
+                    "max_tokens":  {"Standard": 1500, "Industrial": 2500, "Experimental": 3500}.get(detail_level, 1500),
                     "temperature": 0.3,
                 },
             )
@@ -247,11 +266,47 @@ async def _run_claude(junk_desc: str,
         return {"blueprint": "Claude offline — no API key configured.", "tokens": 0}
 
     detail_map = {
-        "Quick Sketch": "Concise 3-section blueprint, main steps only.",
-        "Standard":     "Complete blueprint with 5-7 sections, full assembly steps and specs.",
-        "Deep Dive":    (
-            "Exhaustive engineering document: all sections, tolerances, "
-            "alternatives, failure analysis, and testing procedures."
+        "Standard": (
+            "Complete blueprint with 8 sections: overview, materials manifest, "
+            "tools, assembly sequence, technical specs, safety, testing, modifications. "
+            "Include specific measurements and dimensions for all structural components."
+        ),
+        "Industrial": (
+            "Industrial-grade engineering document. All 8 standard sections PLUS:\n"
+            "- POWER BUDGET: Calculate total wattage for every motor, controller, "
+            "and sensor. Show voltage/current per rail.\n"
+            "- TORQUE CALCULATIONS: For every joint or driven mechanism, calculate "
+            "required torque (load × distance) and verify the harvested motor can deliver it.\n"
+            "- WEIGHT DISTRIBUTION: Estimate weight of each major subassembly and "
+            "verify the frame can support it. Show center of gravity.\n"
+            "- WIRING DIAGRAM: Describe every electrical connection — which wire "
+            "goes from which component to which pin/terminal. Include wire gauge.\n"
+            "- BILL OF MATERIALS TABLE: Every single part with: name, source "
+            "(which inventory item), quantity, weight, and function.\n"
+            "- TOLERANCES: Specify fit tolerances for all critical joints (e.g. "
+            "bearing fits, shaft clearances, alignment requirements).\n"
+            "Be extremely specific. Use exact numbers, not ranges."
+        ),
+        "Experimental": (
+            "Maximum-depth research-grade engineering document. Everything in "
+            "Industrial PLUS:\n"
+            "- FAILURE MODE ANALYSIS: For each critical component, describe what "
+            "happens if it fails, how to detect the failure, and the backup plan.\n"
+            "- THERMAL ANALYSIS: Identify every heat source (motors, electronics, "
+            "friction points) and calculate thermal dissipation requirements.\n"
+            "- FATIGUE LIFE ESTIMATES: For structural members under cyclic load, "
+            "estimate cycles to failure and recommend inspection intervals.\n"
+            "- CONTROL SYSTEM ARCHITECTURE: Describe the software control loop — "
+            "sensor inputs, processing logic, actuator outputs, timing constraints, "
+            "and PID parameters where applicable.\n"
+            "- ALTERNATIVE DESIGNS: For each major subsystem, describe one alternative "
+            "approach using the same inventory and explain why you chose the primary design.\n"
+            "- PERFORMANCE ENVELOPE: Define the operating limits — max speed, max load, "
+            "max continuous runtime, environmental limits — with the physics behind each.\n"
+            "- UPGRADE PATH: Describe what additional components (from future salvage) "
+            "would unlock the next level of capability.\n"
+            "This should read like a senior engineering thesis. Every claim backed by "
+            "a calculation or a specification from the harvested components."
         ),
     }
     system = (
@@ -281,11 +336,15 @@ async def _run_claude(junk_desc: str,
         + detail_map.get(detail_level, detail_map["Standard"])
         + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
     )
+    # Scale output length to detail level
+    token_limit = {"Standard": 4000, "Industrial": 6000, "Experimental": 8000}
+    max_out = token_limit.get(detail_level, 4000)
+
     try:
         client = Anthropic(api_key=ANTHROPIC_KEY)
         resp = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=4000,
+            max_tokens=max_out,
             system=system,
             messages=[{
                 "role":    "user",
