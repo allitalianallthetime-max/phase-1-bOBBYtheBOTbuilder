@@ -492,6 +492,9 @@ if st.session_state.active_tab == "forge":
                             st.success("Agents deployed. Blueprint forging...")
                         elif resp.status_code == 402:
                             st.error("Build quota exceeded. Upgrade your license.")
+                        elif resp.status_code == 403:
+                            detail = resp.json().get("detail", "Request blocked.")
+                            st.error(f"🛡️ {detail}")
                         else:
                             st.error(f"Forge refused: {resp.text}")
                 except Exception as e:
