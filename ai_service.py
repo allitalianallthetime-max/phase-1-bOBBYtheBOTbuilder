@@ -230,9 +230,15 @@ def gen_blueprint(req: BuildReq):
                     )
 
                 build_count, tier = lic
-                limit = 999 if tier == "master" else 100 if tier == "pro" else 25
+                tier_limits = {"master": 999, "pro": 100, "starter": 25, "trial": 1}
+                limit = tier_limits.get(tier, 25)
 
                 if build_count >= limit:
+                    if tier == "trial":
+                        raise HTTPException(
+                            status_code=402,
+                            detail="Your free trial build has been used. Upgrade to Starter ($9.99/mo) for 25 builds per month!"
+                        )
                     raise HTTPException(
                         status_code=402,
                         detail="Engineering quota exceeded. Upgrade your license for more builds."
