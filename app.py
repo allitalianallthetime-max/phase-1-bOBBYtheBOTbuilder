@@ -53,6 +53,14 @@ for k, v in {
 # ─────────────────────────────────────────────
 if not st.session_state.logged_in:
 
+    # ── SILENTLY WAKE SERVICES while visitor reads landing page ──
+    if "landing_warmed" not in st.session_state:
+        try:
+            httpx.get(f"{AI_URL}/health", timeout=3.0)
+        except Exception:
+            pass
+        st.session_state.landing_warmed = True
+
     # ── HERO SECTION ──
     st.markdown("""
         <div style='text-align:center; padding:40px 20px 20px;'>
@@ -88,6 +96,58 @@ if not st.session_state.logged_in:
                 Three AI agents tear apart your inventory, identify every harvestable component,
                 and generate a complete blueprint using
                 <span style='color:#FF4500;'>only your parts</span>.</div>
+            </div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── WHAT CAN YOU BUILD? ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 16px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>What Can You Build?</h2>
+          <p style='color:#64748B; font-size:14px;'>Anything. From anything. Here are some ideas.</p>
+        </div>
+        <div style='max-width:900px; margin:0 auto; padding:0 20px;'>
+          <div style='display:flex; gap:12px; flex-wrap:wrap; justify-content:center;'>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #F97316; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#F97316; font-size:13px; font-weight:bold;'>Robots</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Bipeds, quadrupeds, arms</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #3B82F6; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#3B82F6; font-size:13px; font-weight:bold;'>Home Automation</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Pet feeders, garden systems</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #10B981; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#10B981; font-size:13px; font-weight:bold;'>Shop Tools</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Hydraulic press, jigs, rigs</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #A855F7; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#A855F7; font-size:13px; font-weight:bold;'>Vehicles</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Go-karts, e-bikes, trailers</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #EF4444; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#EF4444; font-size:13px; font-weight:bold;'>Energy Systems</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Solar rigs, wind turbines</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #F59E0B; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#F59E0B; font-size:13px; font-weight:bold;'>Farm &amp; Garden</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Irrigation, coops, planters</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #06B6D4; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#06B6D4; font-size:13px; font-weight:bold;'>Furniture</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Desks, shelves, workbenches</div>
+            </div>
+            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
+                        border-left:3px solid #EC4899; min-width:170px; flex:1; max-width:210px;'>
+              <div style='color:#EC4899; font-size:13px; font-weight:bold;'>Anything Else</div>
+              <div style='color:#64748B; font-size:11px; margin-top:2px;'>If it can be built, we forge it</div>
             </div>
           </div>
         </div>
@@ -357,6 +417,14 @@ if not st.session_state.logged_in:
 
 # ── Show forge header only for logged-in users ──
 st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
+
+# ── WARM UP AI SERVICE (prevents first-click timeout on cold starts) ──
+if "services_warmed" not in st.session_state:
+    try:
+        httpx.get(f"{AI_URL}/health", timeout=5.0)
+    except Exception:
+        pass  # Non-critical — if it fails, the forge will wake it up
+    st.session_state.services_warmed = True
 
 # ─────────────────────────────────────────────
 # SIDEBAR
