@@ -93,6 +93,7 @@ header[data-testid="stHeader"] {
   border: 1px solid var(--forge-border) !important;
   border-radius: 3px !important;
   color: var(--forge-bright) !important;
+  caret-color: var(--forge-orange) !important;
   font-family: 'Share Tech Mono', monospace !important;
   font-size: 13px !important;
   padding: 10px !important;
