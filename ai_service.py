@@ -1,725 +1,373 @@
 """
-AI WORKER — CELERY TASK RUNNER
-================================
-Runs the 3-agent forge pipeline: GROK-3 → CLAUDE-SONNET → GEMINI-FLASH
-Conception memory hooks (recall + absorb) are fully integrated.
+AI SERVICE — FASTAPI GATEWAY
+==============================
+Routes blueprint requests through content safety → quota check → Celery queue.
+Also serves Arena chat, robot battles, and health checks.
 
-Merged from: ai_worker.py + ai_worker_patch.py
-Fixes applied:
-  - asyncio.ensure_future() bug: was called inside _forge_pipeline() which runs
-    inside loop.run_until_complete(). The future gets scheduled on the loop, but
-    the loop closes the moment run_until_complete() returns — absorb NEVER ran.
-    Fix: absorb is now awaited directly. It has its own 15s timeout and a full
-    try/except, so it cannot block or crash the task.
-  - Absorb payload updated to include `tokens_used` (was in patch, missing from
-    original) so Conception can learn which builds were expensive.
-  - Absorb response now logged with domain, patterns_extracted, and insight
-    fields (from patch) for better observability.
-  - Recall payload unified: both `context` and `inventory` keys sent so the
-    Conception service handles either version of the endpoint.
-  - Redundant `import httpx as _hx` inside async functions removed — httpx is
-    imported once at the top and reused.
-  - `run_in_executor` wrappers removed from httpx calls — httpx is async-native;
-    wrapping it in an executor is unnecessary overhead.
+Key fixes applied:
+  - Content safety filter (Tier 1/2) blocks weapons & harmful builds at the gate
+  - Argument order matches ai_worker.forge_blueprint_task signature exactly
+  - Input validation rejects empty project names or inventory
+  - detail_level default matches actual slider values
+  - Logging for safety blocks, errors, and key events
+  - Health check verifies DB and Redis connectivity
+  - Python 3.9+ compatible type hints
 """
 
 import os
+import re
+import json
+import secrets
 import logging
-import asyncio
-import httpx
-from celery import Celery
-from contextlib import contextmanager
+from typing import Optional
+from datetime import datetime
+
 import psycopg2.pool
-from anthropic import Anthropic
+import redis
+from fastapi import FastAPI, Header, Depends, HTTPException
+from pydantic import BaseModel
+from celery import Celery
+from celery.result import AsyncResult
 
+# ── LOGGING ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("ai_worker")
+log = logging.getLogger("ai_service")
 
-# ── CELERY + DB SETUP ──────────────────────────────────────────────────────────
+# ── APP ───────────────────────────────────────────────────────────────────────
+app = FastAPI(title="Builder Foundry AI Service", version="1.0.0")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-celery_app = Celery("ai_worker", broker=REDIS_URL, backend=REDIS_URL)
-celery_app.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    result_expires=3600,
-    worker_prefetch_multiplier=1,
-    task_acks_late=True,
-)
+# ── CELERY ────────────────────────────────────────────────────────────────────
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+celery_app = Celery("ai_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
+# ── REDIS (for Arena chat) ────────────────────────────────────────────────────
+try:
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client.ping()
+    log.info("Redis connected for Arena chat.")
+except Exception as e:
+    log.warning("Redis unavailable for Arena chat: %s", e)
+    redis_client = None
+
+# ── DATABASE ──────────────────────────────────────────────────────────────────
 _db_url = os.getenv("DATABASE_URL")
 if not _db_url:
-    raise RuntimeError("DATABASE_URL is not set.")
+    raise RuntimeError("DATABASE_URL environment variable is not set. Cannot start ai_service.")
 
-pool = psycopg2.pool.ThreadedConnectionPool(2, 8, _db_url)
-
-
-@contextmanager
-def get_db():
-    conn = pool.getconn()
-    try:
-        yield conn
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        pool.putconn(conn)
+db_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, _db_url)
+log.info("Database pool created.")
 
 
-# ── ENVIRONMENT ────────────────────────────────────────────────────────────────
-
-CONCEPTION_URL = os.getenv("CONCEPTION_SERVICE_URL", "http://builder-conception:10000")
-INT_KEY        = os.getenv("INTERNAL_API_KEY", "")
-ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-GEMINI_KEY     = os.getenv("GEMINI_API_KEY", "")
-GROK_KEY       = os.getenv("GROK_API_KEY", "")
-
-
-def _h() -> dict:
-    return {"x-internal-key": INT_KEY}
+# ── AUTH ──────────────────────────────────────────────────────────────────────
+def verify_key(x_internal_key: str = Header(None)):
+    """Authenticate internal service-to-service requests."""
+    expected = os.getenv("INTERNAL_API_KEY", "")
+    if not secrets.compare_digest(x_internal_key or "", expected):
+        raise HTTPException(status_code=403, detail="Invalid internal key.")
 
 
-# ── CONCEPTION MEMORY HOOKS ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CONTENT SAFETY FILTER
+# ══════════════════════════════════════════════════════════════════════════════
+# Screens project names and inventory descriptions BEFORE any AI agent is called.
+# Zero API cost — blocked requests never enter the Celery queue.
+#
+# TIER 1: Absolute block — weapons, explosives, chemical/biological threats
+# TIER 2: Block with redirect — drugs, break-in tools, stalking, counterfeiting
+# TIER 3: Allowed — knives, crossbows, trebuchets, hunting gear (legitimate maker projects)
 
-async def _recall_conception_memory(user_email: str,
-                                    junk_desc: str,
-                                    project_type: str) -> str:
+_TIER1_PATTERNS = [
+    # ── Explosives & bombs ──
+    r"\b(pipe\s*bomb|ied|improvised\s*explosive|explosive\s*device)\b",
+    r"\b(c[\-\s]?4|semtex|dynamite|det[oa]nat[oe]r|blasting\s*cap)\b",
+    r"\b(car\s*bomb|suicide\s*bomb|vest\s*bomb|nail\s*bomb|pressure\s*cooker\s*bomb)\b",
+    r"\b(grenade|land\s*mine|claymore|molotov|napalm|incendiary\s*device)\b",
+    r"\b(ammonium\s*nitrate\s*(bomb|explosive|device))\b",
+    r"\b(thermite\s*(bomb|weapon|device))\b",
+    # ── Firearms manufacturing ──
+    r"\b(ghost\s*gun|3d\s*print(ed)?\s*gun|zip\s*gun|slam\s*fire)\b",
+    r"\b(gun\s*manufactur|build\s*a?\s*(gun|firearm|rifle|pistol|shotgun))\b",
+    r"\b(ar[\-\s]?15\s*(lower|receiver|build))\b",
+    r"\b(suppressor|silencer)\b(?!.*\b(exhaust|muffler|noise\s*reduc)\b)",
+    r"\b(bump\s*stock|auto\s*sear|full\s*auto\s*convert)\b",
+    # ── Chemical weapons ──
+    r"\b(nerve\s*(agent|gas)|sarin|vx\s*gas|tabun|mustard\s*gas)\b",
+    r"\b(chlorine\s*gas\s*(weapon|bomb|attack))\b",
+    r"\b(ricin|anthrax|botulinum\s*toxin)\b",
+    r"\b(chemical\s*weapon|poison\s*gas|toxic\s*(gas|weapon|agent))\b",
+    # ── Biological weapons ──
+    r"\b(biological\s*weapon|bio[\-\s]?weapon|weaponized\s*(virus|bacteria|pathogen))\b",
+    # ── Radiological ──
+    r"\b(dirty\s*bomb|radiological\s*(weapon|device|dispersal))\b",
+    r"\b(nuclear\s*(bomb|weapon|device))\b",
+]
+
+_TIER2_PATTERNS = [
+    # ── Drug manufacturing ──
+    r"\b(meth\s*lab|cook(ing)?\s*meth|synthesize\s*(meth|mdma|lsd|fentanyl|cocaine))\b",
+    r"\b(drug\s*(lab|manufactur|production|synthesis))\b",
+    # ── Break-in tools (unless hobby/locksmith context) ──
+    r"\b(lock\s*pick(ing)?\s*(kit|set|tool))\b(?!.*\b(sport|hobby|locksmith)\b)",
+    r"\b(bump\s*key|slim\s*jim\s*(break|car\s*theft))\b",
+    # ── Stalking / surveillance targeting individuals ──
+    r"\b(spy\s*on\s*(my|wife|husband|girlfriend|boyfriend|ex|neighbor))\b",
+    r"\b(hidden\s*camera\s*(spy|stalk|watch))\b",
+    r"\b(gps\s*track(er|ing)\s*(stalk|spy|follow|someone))\b",
+    # ── Counterfeiting ──
+    r"\b(counterfeit\s*(money|currency|bills|coins))\b",
+    r"\b(fake\s*(id|passport|license|documents))\b",
+    r"\b(money\s*print(er|ing)\s*(fake|counterfeit))\b",
+]
+
+_tier1_compiled = [re.compile(p, re.IGNORECASE) for p in _TIER1_PATTERNS]
+_tier2_compiled = [re.compile(p, re.IGNORECASE) for p in _TIER2_PATTERNS]
+
+
+def _check_content_safety(project_type: str, junk_desc: str) -> Optional[dict]:
     """
-    Pull Conception's accumulated memory before running the AI agents.
-    Returns a context string to prepend to every agent's system prompt.
-    If Conception is offline or empty → returns "" without crashing.
-
-    Sends both `context` and `inventory` keys for compatibility with
-    both v1 and v2 of the Conception memory endpoint.
+    Screen user input for dangerous content BEFORE any AI is called.
+    Returns None if safe, or a dict with rejection details if blocked.
     """
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                f"{CONCEPTION_URL}/conception/recall",
-                json={
-                    "user_email":   user_email,
-                    "context":      f"{project_type}: {junk_desc}",  # v1 key
-                    "inventory":    junk_desc,                        # v2 key
-                    "project_type": project_type,
-                },
-                headers=_h(),
-            )
-        if resp.status_code == 200:
-            data = resp.json()
-            ctx = data.get("context_string") or data.get("context", "")
-            if ctx:
-                log.info("Conception recalled %d chars for %s", len(ctx), user_email)
-            return ctx
-    except Exception as e:
-        log.warning("Conception recall skipped (non-critical): %s", e)
-    return ""
+    combined = f"{project_type} {junk_desc}"
 
-
-async def _absorb_into_conception(user_email: str,
-                                   junk_desc: str,
-                                   project_type: str,
-                                   blueprint: str,
-                                   grok_notes: str,
-                                   claude_notes: str,
-                                   build_id: int,
-                                   tokens_used: int) -> None:
-    """
-    Feed the finished blueprint into Conception for deep learning.
-    Awaited directly — has its own 15s timeout + full try/except,
-    so it cannot block or crash the forge task.
-
-    FIX: was previously called via asyncio.ensure_future(), which schedules
-    on the running loop. But the loop closes immediately after
-    run_until_complete() returns in forge_blueprint_task() — the coroutine
-    was being silently dropped and Conception never learned anything.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{CONCEPTION_URL}/conception/absorb",
-                json={
-                    "build_id":     build_id,
-                    "user_email":   user_email,
-                    "junk_desc":    junk_desc,
-                    "project_type": project_type,
-                    "blueprint":    blueprint,
-                    "grok_notes":   grok_notes,
-                    "claude_notes": claude_notes,
-                    "tokens_used":  tokens_used,   # added from patch
-                },
-                headers=_h(),
-            )
-        if resp.status_code == 200:
-            data = resp.json()
-            log.info(
-                "Conception absorbed build %d — domain: %s | patterns: %d | insight: %s",
-                build_id,
-                data.get("domain", "?"),
-                data.get("patterns_extracted", 0),
-                data.get("insight", ""),
-            )
-        else:
-            log.warning("Conception absorb returned HTTP %d for build %d",
-                        resp.status_code, build_id)
-    except Exception as e:
-        log.warning("Conception absorb failed (non-critical): %s", e)
-
-
-# ── AI AGENTS ──────────────────────────────────────────────────────────────────
-
-async def _run_grok(junk_desc: str,
-                    project_type: str,
-                    detail_level: str,
-                    conception_context: str) -> dict:
-    """GROK-3: structural engineering analysis."""
-    if not GROK_KEY:
-        log.warning("GROK_API_KEY not set — Grok offline.")
-        return {"analysis": "Grok offline — no API key configured.", "tokens": 0}
-
-    system = (
-        f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
-        f"CRITICAL DISTINCTION:\n"
-        f"- PROJECT GOAL = the thing the user wants to BUILD. They do NOT have this yet.\n"
-        f"- INVENTORY = the physical items the user ALREADY OWNS. Analyze THESE.\n"
-        f"- NEVER treat the project goal as an inventory item.\n\n"
-        f"ABSOLUTE RULE: The user is building ONLY from the inventory they listed below. "
-        f"They are NOT buying new parts. Your job is to analyze EACH SPECIFIC ITEM in "
-        f"their inventory and explain exactly how it can be repurposed to build the project goal.\n\n"
-        f"For EVERY item in the inventory:\n"
-        f"1. Identify what useful components it contains (motors, frames, wiring, sensors, etc.)\n"
-        f"2. Explain the engineering properties of those components\n"
-        f"3. Describe exactly how each component maps to the project goal\n"
-        f"4. Flag any items that genuinely cannot be used and explain why\n\n"
-        f"HONESTY REQUIREMENTS:\n"
-        f"- When you list specs (voltage, torque, dimensions), clearly mark whether each "
-        f"value is KNOWN (from the product model/specs) or ESTIMATED (your best guess for "
-        f"this type of equipment). Use [KNOWN] or [EST] tags.\n"
-        f"- At the END of your analysis, include a FEASIBILITY ASSESSMENT section:\n"
-        f"  - FEASIBILITY SCORE: 0-100 (can this project realistically be built from this inventory?)\n"
-        f"  - CRITICAL GAPS: List anything essential for the project that the inventory CANNOT provide\n"
-        f"  - HONEST LIMITATIONS: What will this build NOT be able to do, even if assembled perfectly?\n"
-        f"  - ADDITIONAL ITEMS NEEDED: If the project genuinely requires things not in the inventory, say so\n"
-        f"- If the project is fundamentally impossible with this inventory, SAY SO clearly. "
-        f"Do not invent capabilities that don't exist. It's better to say 'this inventory "
-        f"cannot build X because Y is missing' than to produce a fantasy blueprint.\n\n"
-        f"Think like a resourceful engineer who builds from what's available — not a "
-        f"catalog shopper. If someone lists a treadmill, you see a DC motor, a steel frame, "
-        f"a belt drive, an incline actuator, a control board, and wiring. If they list a "
-        f"computer, you see fans, power supply, heat sinks, a processing brain, and a metal chassis.\n\n"
-        f"CREATIVE ENGINEERING:\n"
-        f"Don't just list what components can be harvested — suggest UNEXPECTED uses. "
-        f"Think about what makes each item's components UNIQUE and how those unique "
-        f"properties could solve the project in a way nobody has tried before.\n"
-        f"- A treadmill belt is not just a belt — it's a flat, wide, flexible surface "
-        f"that could be a conveyor, a sifting screen, a track, a vibration dampener, or a seal.\n"
-        f"- A computer's PSU is not just power — it's a precision multi-voltage source "
-        f"that could drive sensors, logic, and low-power actuators independently.\n"
-        f"- A mower's blade motor isn't just rotation — it's high-torque, weatherproof, "
-        f"and designed for impacts, making it ideal for harsh-environment actuation.\n"
-        f"- At the END of your component analysis, include a 'CREATIVE POSSIBILITIES' "
-        f"section suggesting 2-3 novel mechanical approaches that the inventory uniquely enables. "
-        f"These should NOT be copies of commercial products — they should be designs you'd "
-        f"ONLY arrive at because of these specific parts.\n\n"
-        f"Detail level: {detail_level}.\n"
-        + ({
-            "Standard": "Identify major harvestable components from each item.",
-            "Industrial": (
-                "For each component: specify exact voltages, current ratings, "
-                "torque values, dimensions, weight, and material grade where possible. "
-                "Calculate mechanical advantage of any gear/belt systems. "
-                "Identify wire gauges and connector types."
-            ),
-            "Experimental": (
-                "Maximum analysis depth. For each component: exact electrical specs "
-                "(voltage, current, impedance), mechanical specs (torque, RPM, gear ratio, "
-                "material tensile strength), thermal specs (max operating temp, thermal "
-                "conductivity of housings), and dimensional specs (shaft diameter, bearing "
-                "bore, frame wall thickness). Identify hidden value — capacitors, rare earth "
-                "magnets in motors, precision machined surfaces, high-quality bearings, "
-                "specialized alloys. Estimate component remaining life span based on age "
-                "and typical duty cycles."
-            ),
-        }.get(detail_level, "") + "\n")
-        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
-    )
-    try:
-        async with httpx.AsyncClient(timeout={"Standard": 40.0, "Industrial": 60.0, "Experimental": 80.0}.get(detail_level, 40.0)) as client:
-            resp = await client.post(
-                "https://api.x.ai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROK_KEY}",
-                    "Content-Type":  "application/json",
-                },
-                json={
-                    "model": "grok-3",
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user",   "content":
-                            f"WHAT I WANT TO BUILD (this is my goal — I do NOT already have this):\n{project_type}\n\n"
-                            f"WHAT I ACTUALLY HAVE (these are the physical items I own — build from THESE):\n{junk_desc}\n\n"
-                            f"IMPORTANT: The project goal above is what I want to CREATE. "
-                            f"The inventory below is what I have to BUILD IT FROM. "
-                            f"Do NOT treat the project goal as an inventory item.\n\n"
-                            f"Break down every item in my inventory and tell me exactly "
-                            f"what useful parts I can harvest from each one to build the project goal."},
-                    ],
-                    "max_tokens":  {"Standard": 1500, "Industrial": 2500, "Experimental": 3500}.get(detail_level, 1500),
-                    "temperature": 0.3,
-                },
-            )
-        if resp.status_code == 200:
-            d = resp.json()
+    for pattern in _tier1_compiled:
+        if pattern.search(combined):
+            log.warning("TIER 1 BLOCK: project='%s'", project_type[:80])
             return {
-                "analysis": d["choices"][0]["message"]["content"],
-                "tokens":   d.get("usage", {}).get("total_tokens", 0),
+                "blocked": True,
+                "tier": 1,
+                "message": (
+                    "This project request has been blocked. The Builder Foundry "
+                    "does not generate blueprints for weapons, explosives, or "
+                    "devices intended to harm people. This policy exists to keep "
+                    "our community safe."
+                ),
             }
-        log.error("Grok returned HTTP %d", resp.status_code)
-        return {"analysis": f"Grok error {resp.status_code}", "tokens": 0}
-    except Exception as e:
-        log.error("Grok failed: %s", e)
-        return {"analysis": f"Grok unavailable: {e}", "tokens": 0}
 
-
-async def _run_claude(junk_desc: str,
-                      project_type: str,
-                      grok_analysis: str,
-                      detail_level: str,
-                      conception_context: str) -> dict:
-    """CLAUDE-SONNET: full engineering blueprint from Grok's analysis."""
-    if not ANTHROPIC_KEY:
-        log.warning("ANTHROPIC_API_KEY not set — Claude offline.")
-        return {"blueprint": "Claude offline — no API key configured.", "tokens": 0}
-
-    detail_map = {
-        "Standard": (
-            "Complete blueprint with 8 sections: overview, materials manifest, "
-            "tools, assembly sequence, technical specs, safety, testing, modifications. "
-            "Include specific measurements and dimensions for all structural components."
-        ),
-        "Industrial": (
-            "Industrial-grade engineering document. All 8 standard sections PLUS:\n"
-            "- POWER BUDGET: Calculate total wattage for every motor, controller, "
-            "and sensor. Show voltage/current per rail.\n"
-            "- TORQUE CALCULATIONS: For every joint or driven mechanism, calculate "
-            "required torque (load × distance) and verify the harvested motor can deliver it.\n"
-            "- WEIGHT DISTRIBUTION: Estimate weight of each major subassembly and "
-            "verify the frame can support it. Show center of gravity.\n"
-            "- WIRING DIAGRAM: Describe every electrical connection — which wire "
-            "goes from which component to which pin/terminal. Include wire gauge.\n"
-            "- BILL OF MATERIALS TABLE: Every single part with: name, source "
-            "(which inventory item), quantity, weight, and function.\n"
-            "- TOLERANCES: Specify fit tolerances for all critical joints (e.g. "
-            "bearing fits, shaft clearances, alignment requirements).\n"
-            "Be extremely specific. Use exact numbers, not ranges."
-        ),
-        "Experimental": (
-            "Maximum-depth research-grade engineering document. Everything in "
-            "Industrial PLUS:\n"
-            "- FAILURE MODE ANALYSIS: For each critical component, describe what "
-            "happens if it fails, how to detect the failure, and the backup plan.\n"
-            "- THERMAL ANALYSIS: Identify every heat source (motors, electronics, "
-            "friction points) and calculate thermal dissipation requirements.\n"
-            "- FATIGUE LIFE ESTIMATES: For structural members under cyclic load, "
-            "estimate cycles to failure and recommend inspection intervals.\n"
-            "- CONTROL SYSTEM ARCHITECTURE: Describe the software control loop — "
-            "sensor inputs, processing logic, actuator outputs, timing constraints, "
-            "and PID parameters where applicable.\n"
-            "- ALTERNATIVE DESIGNS: For each major subsystem, describe one alternative "
-            "approach using the same inventory and explain why you chose the primary design.\n"
-            "- PERFORMANCE ENVELOPE: Define the operating limits — max speed, max load, "
-            "max continuous runtime, environmental limits — with the physics behind each.\n"
-            "- UPGRADE PATH: Describe what additional components (from future salvage) "
-            "would unlock the next level of capability.\n"
-            "This should read like a senior engineering thesis. Every claim backed by "
-            "a calculation or a specification from the harvested components."
-        ),
-    }
-    system = (
-        "You are CLAUDE-SONNET, a senior robotics and mechanical engineer "
-        "on AoC3P0 Builder Foundry.\n\n"
-        "CRITICAL DISTINCTION:\n"
-        "- PROJECT GOAL = the thing the user wants to BUILD. They do NOT have this yet.\n"
-        "- INVENTORY = the physical items the user ALREADY OWNS. Build from THESE.\n"
-        "- NEVER treat the project goal as an inventory item. NEVER harvest parts from it.\n\n"
-        "DESIGN ORIGINALITY RULE:\n"
-        "Do NOT look up how commercial versions of the project work and copy them. "
-        "Instead, INVENT a novel mechanism based on what the inventory actually provides. "
-        "Let the inventory DICTATE the design — not the other way around.\n"
-        "- If the inventory has a conveyor belt, design a conveyor-based system — "
-        "don't force it into a rotating drum just because that's how a commercial product works.\n"
-        "- If the inventory has hydraulic cylinders, design a hydraulic solution — "
-        "don't ignore them to copy an electric motor design you've seen before.\n"
-        "- If the inventory has a riding mower, think about what a riding mower's "
-        "unique components make possible — don't just strip it for generic motors.\n"
-        "- Ask yourself: 'What design would I ONLY arrive at because I have THESE specific parts?' "
-        "That's the design you should build.\n"
-        "- Propose at least 2 different mechanical approaches in the Project Overview, "
-        "explain why you chose the primary one based on the inventory's strengths, "
-        "and note the alternative in Optional Modifications.\n\n"
-        "ABSOLUTE RULE: The Materials Manifest section must be built ENTIRELY from "
-        "components harvested from the user's inventory items. Do NOT list generic parts "
-        "to buy. Instead, for each material needed, specify which inventory item it "
-        "comes from. Example: 'Drive Motor: Harvested from treadmill (2.5HP DC motor, "
-        "model X)' or 'Structural Frame: Repurposed from treadmill steel base.'\n\n"
-        "The ONLY exception is basic consumables (fasteners, wires, adhesives, lubricant) "
-        "which you may list separately under 'Additional Consumables Needed.'\n\n"
-        "HONESTY REQUIREMENTS:\n"
-        "- When Grok's analysis tags specs as [EST] (estimated), carry that uncertainty "
-        "forward. Say 'approximately' or 'estimated' — do NOT present guesses as facts.\n"
-        "- Include a section called 'HONEST ASSESSMENT & GAPS' near the end that covers:\n"
-        "  * What this build CAN realistically achieve with this inventory\n"
-        "  * What this build CANNOT achieve (be specific about limitations)\n"
-        "  * MISSING COMPONENTS: Things the project genuinely needs that aren't in the inventory\n"
-        "  * FEASIBILITY RATING: Percentage chance this build works as described\n"
-        "- If the inventory is genuinely insufficient for the project, say so in the "
-        "Project Overview. Still provide the best possible blueprint, but be clear about "
-        "what's missing and what the user would need to find/buy to complete it.\n"
-        "- Never claim DARPA-quality, military-grade, or professional-grade performance "
-        "unless the components can actually deliver it. Be ambitious but honest.\n\n"
-        "- Include a section called 'BUDGET GAP-FILLER SHOPPING LIST' after the gaps section:\n"
-        "  * For each missing component, suggest the CHEAPEST specific part that fills the gap\n"
-        "  * Suggest parts from common stores: Home Depot, Harbor Freight, NAPA Auto Parts, "
-        "Amazon, Walmart, or local auto salvage yards\n"
-        "  * Format each item as: Part Name | Store | Approx Price | Why It Works\n"
-        "  * Prioritize junkyard/salvage options first (cheapest), then budget retail\n"
-        "  * Include a TOTAL ESTIMATED COST to fill all gaps\n"
-        "  * If the gap can be filled by finding more free junk (e.g. 'any old printer "
-        "has stepper motors'), suggest that FIRST before a store purchase\n"
-        "  * Always suggest the budget option — Harbor Freight over Snap-On, used over new\n\n"
-        "Using GROK-3's structural analysis of the inventory, produce a complete "
-        "engineering blueprint with these sections:\n"
-        "1-Project Overview (must explain the creative repurposing strategy),\n"
-        "2-Materials Manifest (ONLY from inventory — say where each part comes from),\n"
-        "3-Tools Required,\n"
-        "4-Assembly Sequence (include disassembly/harvesting steps first),\n"
-        "5-Technical Specifications,\n"
-        "6-Safety Notes,\n"
-        "7-Testing Procedure,\n"
-        "8-Optional Modifications,\n"
-        "9-HONEST ASSESSMENT & GAPS (required — see honesty requirements above),\n"
-        "10-BUDGET GAP-FILLER SHOPPING LIST (required — see above).\n\n"
-        + detail_map.get(detail_level, detail_map["Standard"])
-        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
-    )
-    # Scale output length to detail level
-    token_limit = {"Standard": 4000, "Industrial": 6000, "Experimental": 8000}
-    max_out = token_limit.get(detail_level, 4000)
-
-    try:
-        client = Anthropic(api_key=ANTHROPIC_KEY)
-        resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=max_out,
-            system=system,
-            messages=[{
-                "role":    "user",
-                "content": (
-                    f"GROK-3 ANALYSIS OF MY INVENTORY:\n{grok_analysis}\n\n"
-                    f"WHAT I WANT TO BUILD (this is my goal — I do NOT own this yet):\n{project_type}\n\n"
-                    f"WHAT I ACTUALLY HAVE (build from ONLY these items):\n{junk_desc}\n\n"
-                    f"IMPORTANT: '{project_type}' is the thing I want to CREATE. "
-                    f"It is NOT in my inventory. Do NOT harvest parts from it. "
-                    f"The inventory items listed above are the ONLY source of parts.\n\n"
-                    f"Generate a complete blueprint for building '{project_type}' using "
-                    f"ONLY parts harvested from the inventory items listed above. "
-                    f"Every item in the Materials Manifest must reference which inventory "
-                    f"item it was harvested from."
+    for pattern in _tier2_compiled:
+        if pattern.search(combined):
+            log.warning("TIER 2 BLOCK: project='%s'", project_type[:80])
+            return {
+                "blocked": True,
+                "tier": 2,
+                "message": (
+                    "This project request has been blocked. The Builder Foundry "
+                    "cannot assist with this type of build. If you believe this "
+                    "is an error, please rephrase your project description or "
+                    "contact support."
                 ),
-            }],
+            }
+
+    return None  # Safe — proceed
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PYDANTIC MODELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BuildReq(BaseModel):
+    junk_desc: str
+    project_type: str
+    detail_level: str = "Standard"
+    user_email: str = "anonymous"
+
+class ChatMsg(BaseModel):
+    user_name: str
+    tier: str
+    message: str
+
+class BattleReq(BaseModel):
+    robot_a_name: str
+    robot_a_specs: str
+    robot_b_name: str
+    robot_b_specs: str
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BLUEPRINT GENERATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/generate", dependencies=[Depends(verify_key)])
+def gen_blueprint(req: BuildReq):
+
+    # ── INPUT VALIDATION ──
+    project_clean = req.project_type.strip()
+    inventory_clean = req.junk_desc.strip()
+
+    if not project_clean:
+        raise HTTPException(status_code=400, detail="Project name is required.")
+    if not inventory_clean:
+        raise HTTPException(status_code=400, detail="Inventory description is required.")
+    if len(project_clean) < 3:
+        raise HTTPException(status_code=400, detail="Project name is too short.")
+    if len(inventory_clean) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Inventory description is too short. Describe what you have in more detail."
         )
-        return {
-            "blueprint": resp.content[0].text,
-            "tokens":    resp.usage.input_tokens + resp.usage.output_tokens,
-        }
-    except Exception as e:
-        log.error("Claude failed: %s", e)
-        return {"blueprint": f"Claude unavailable: {e}", "tokens": 0}
 
+    # ── CONTENT SAFETY CHECK (before any AI call or quota deduction) ──
+    safety = _check_content_safety(project_clean, inventory_clean)
+    if safety:
+        raise HTTPException(status_code=403, detail=safety["message"])
 
-async def _run_gemini(blueprint: str,
-                      project_type: str,
-                      conception_context: str) -> dict:
-    """GEMINI-FLASH: quality review, safety flags, cost/time estimates."""
-    _offline = {
-        "review_notes":        "Gemini offline — no API key configured.",
-        "safety_flags":        [],
-        "innovations":         [],
-        "difficulty_rating":   "Unknown",
-        "estimated_build_time": "Unknown",
-        "estimated_cost_usd":  "Unknown",
-        "tags":                [],
-        "conception_ready":    False,
-    }
-    if not GEMINI_KEY:
-        log.warning("GEMINI_API_KEY not set — Gemini offline.")
-        return {"notes": _offline, "tokens": 0}
-
-    import google.generativeai as genai
-    import json as _json
-
-    genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel(
-        "gemini-2.5-flash",
-        generation_config={"response_mime_type": "application/json"},
-    )
-    prompt = (
-        "Review this engineering blueprint. The blueprint MUST use parts harvested from "
-        "the user's actual inventory — not generic store-bought materials. Check whether "
-        "the blueprint actually references the inventory items. Return JSON only — no markdown, no preamble:\n"
-        "{\n"
-        '  "review_notes": "2-3 paragraph quality review — specifically note whether the blueprint creatively uses the actual inventory or just lists generic parts",\n'
-        '  "inventory_usage_score": "0-100 — what percentage of inventory items were actually used in the blueprint",\n'
-        '  "safety_flags": ["list safety issues"],\n'
-        '  "innovations": ["2-3 creative ways to better use the inventory items"],\n'
-        '  "difficulty_rating": "Beginner|Intermediate|Advanced|Expert",\n'
-        '  "estimated_build_time": "e.g. 4-6 hours",\n'
-        '  "estimated_cost_usd": "e.g. $15-$40 for consumables only since parts come from inventory",\n'
-        '  "tags": ["engineering domain tags"],\n'
-        '  "conception_ready": true or false\n'
-        "}\n"
-        + (f"CONCEPTION CONTEXT: {conception_context}\n" if conception_context else "")
-        + f"BLUEPRINT:\n{blueprint[:3000]}\n"
-        + f"PROJECT: {project_type}"
-    )
+    # ── QUOTA CHECK & INCREMENT ──
+    conn = db_pool.getconn()
     try:
-        resp = await model.generate_content_async(prompt)
-        notes = _json.loads(resp.text)
-        return {"notes": notes, "tokens": 0}
-    except Exception as e:
-        log.error("Gemini failed: %s", e)
-        return {"notes": {**_offline, "review_notes": f"Gemini error: {e}"}, "tokens": 0}
-
-
-# ── SCHEMATIC GENERATOR ───────────────────────────────────────────────────────
-
-async def _generate_schematic(blueprint: str,
-                               project_type: str,
-                               junk_desc: str) -> str:
-    """Generate an SVG technical schematic from the blueprint."""
-    if not ANTHROPIC_KEY:
-        log.warning("ANTHROPIC_API_KEY not set — schematic generation skipped.")
-        return ""
-
-    system = (
-        "You are a technical illustrator who draws simplified side-view technical "
-        "drawings of engineering projects. Return ONLY valid SVG code.\n\n"
-        "ABSOLUTE RULES:\n"
-        "1. Output starts with <svg and ends with </svg>. NOTHING else.\n"
-        "2. No markdown, no ```svg, no explanation text before or after.\n"
-        "3. Allowed SVG elements: <svg>, <rect>, <text>, <line>, <g>, <circle>, "
-        "<ellipse>, <polygon>, <path>. No <foreignObject>, no <image>, no <style>, "
-        "no <script>, no <clipPath>, no <defs>, no <filter>.\n"
-        "4. All styling via inline attributes (fill=, stroke=, font-size=, etc).\n"
-        "5. font-family='Arial, sans-serif' on all text.\n"
-        "6. viewBox='0 0 800 550'. White background rect first.\n\n"
-        "DRAWING STYLE — TECHNICAL ILLUSTRATION:\n"
-        "Draw the project as it would ACTUALLY LOOK when assembled, using a "
-        "simplified side-view or 3/4 view. Use basic geometric shapes to represent "
-        "the real form:\n"
-        "- A ROBOT: Draw a recognizable humanoid silhouette — rectangular torso, "
-        "cylindrical/rectangular legs with joints, circular joints at hips/knees, "
-        "rectangular feet. It should look like a robot.\n"
-        "- A VEHICLE: Draw the vehicle shape — chassis, wheels, cab, etc.\n"
-        "- A MACHINE: Draw the machine shape — housing, drum, conveyor, etc.\n"
-        "- ANY PROJECT: Draw what it actually looks like, simplified.\n\n"
-        "The shapes should be recognizable as the thing being built. NOT just "
-        "a block diagram of labeled rectangles.\n\n"
-        "LABELING:\n"
-        "- Use thin leader lines (stroke='#94A3B8' stroke-width='0.5') from "
-        "components to labels positioned to the LEFT or RIGHT of the drawing.\n"
-        "- Each label: bold 10px component name + 8px source in #64748B below it.\n"
-        "- Example: 'HIP MOTOR' (bold) then 'Source: Treadmill' (gray) below.\n"
-        "- Keep labels outside the drawing, connected by leader lines.\n\n"
-        "COLOR FILLS:\n"
-        "- Structure/frame: fill='#2563EB' opacity='0.2' stroke='#2563EB'\n"
-        "- Motors/actuators: fill='#DC2626' opacity='0.2' stroke='#DC2626'\n"
-        "- Electronics: fill='#16A34A' opacity='0.2' stroke='#16A34A'\n"
-        "- Sensors: fill='#9333EA' opacity='0.2' stroke='#9333EA'\n"
-        "- Belts/mechanical: fill='#D97706' opacity='0.2' stroke='#D97706'\n"
-        "- Joints/pivots: fill='#475569' stroke='#1E293B' (dark circles)\n\n"
-        "LAYOUT:\n"
-        "- Center the drawing in the canvas (main object roughly x=200-600)\n"
-        "- Labels on left side (x=20-180) and right side (x=620-790)\n"
-        "- Title: 14px bold top-left with project name\n"
-        "- 2-3 dimension lines with arrows showing overall height and width\n"
-        "- Small color legend in bottom-right corner (5 small squares with text)\n"
-        "- Faint grid behind everything: lines every 40px, stroke='#F1F5F9'\n\n"
-        "Keep path d= attributes simple — straight lines and basic curves only. "
-        "No complex bezier art. Think engineering drawing, not illustration."
-    )
-
-    try:
-        client = Anthropic(api_key=ANTHROPIC_KEY)
-        resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            system=system,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Draw a technical illustration of: {project_type}\n\n"
-                    f"It is built from these inventory items:\n{junk_desc}\n\n"
-                    f"Here is the blueprint describing the assembly:\n{blueprint[:2000]}\n\n"
-                    f"Draw what the finished {project_type} looks like from the side, "
-                    f"with each major component colored by type and labeled with "
-                    f"leader lines showing what it is and which inventory item it came from.\n\n"
-                    f"Output ONLY the <svg>...</svg> code. Nothing else."
-                ),
-            }],
-        )
-        svg = resp.content[0].text.strip()
-
-        # Aggressive cleanup — extract only the SVG tags
-        svg_start = svg.find("<svg")
-        svg_end = svg.rfind("</svg>")
-        if svg_start == -1 or svg_end == -1:
-            log.warning("Schematic: no valid SVG tags found.")
-            return ""
-        svg = svg[svg_start:svg_end + 6]
-
-        # Remove any stray markdown artifacts
-        svg = svg.replace("```", "").replace("`", "")
-
-        # Verify it's not absurdly long (broken SVG tends to be huge)
-        if len(svg) > 20000:
-            log.warning("Schematic SVG too large (%d chars), likely broken.", len(svg))
-            return ""
-
-        log.info("Schematic SVG generated: %d chars", len(svg))
-        return svg
-    except Exception as e:
-        log.error("Schematic generation failed: %s", e)
-        return ""
-
-
-# ── FORGE PIPELINE ─────────────────────────────────────────────────────────────
-
-async def _forge_pipeline(user_email: str,
-                           junk_desc: str,
-                           project_type: str,
-                           detail_level: str,
-                           task=None) -> dict:
-
-    def _update(msg):
-        if task:
-            task.update_state(state="PROGRESS", meta={"message": msg})
-
-    # 0 — Recall Conception memory (context for all agents)
-    _update("🔍 Scanning Conception memory banks...")
-    ctx = await _recall_conception_memory(user_email, junk_desc, project_type)
-
-    # 1 — Grok: structural analysis
-    _update("🔧 GROK-3 disassembling inventory... identifying harvestable components")
-    log.info("Agent 1: Grok structural analysis")
-    grok_r   = await _run_grok(junk_desc, project_type, detail_level, ctx)
-    grok_out = grok_r["analysis"]
-
-    # 2 — Claude: engineering blueprint
-    _update("📐 CLAUDE mapping component pathways... drafting engineering blueprint")
-    log.info("Agent 2: Claude blueprint")
-    claude_r  = await _run_claude(junk_desc, project_type, grok_out, detail_level, ctx)
-    blueprint = claude_r["blueprint"]
-
-    # 3 — Gemini: quality review
-    _update("🔬 GEMINI inspecting blueprint... checking safety and inventory usage")
-    log.info("Agent 3: Gemini review")
-    gemini_r = await _run_gemini(blueprint, project_type, ctx)
-    notes    = gemini_r["notes"] if isinstance(gemini_r["notes"], dict) else {}
-
-    # 4 — Schematic: technical drawing
-    _update("✏️ Plotting technical schematic... rendering component layout")
-    log.info("Agent 4: Schematic generation")
-    schematic_svg = await _generate_schematic(blueprint, project_type, junk_desc)
-
-    total_tokens = grok_r["tokens"] + claude_r["tokens"]
-
-    # 5 — Save to database
-    _update("💾 Archiving blueprint to Conception DNA Vault...")
-    build_id = None
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
+        with conn.cursor() as cur:
+            if req.user_email not in ("admin", "anonymous"):
                 cur.execute(
-                    """
-                    INSERT INTO builds
-                        (user_email, junk_desc, project_type, blueprint,
-                         grok_notes, claude_notes, tokens_used, conception_ready)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        user_email, junk_desc, project_type, blueprint,
-                        grok_out,
-                        notes.get("review_notes", ""),
-                        total_tokens,
-                        notes.get("conception_ready", False),
-                    ),
+                    "SELECT build_count, tier FROM licenses "
+                    "WHERE email = %s AND status = 'active'",
+                    (req.user_email,)
                 )
-                build_id = cur.fetchone()[0]
+                lic = cur.fetchone()
+
+                if not lic:
+                    raise HTTPException(
+                        status_code=402,
+                        detail="No active license found."
+                    )
+
+                build_count, tier = lic
+                limit = 999 if tier == "master" else 100 if tier == "pro" else 25
+
+                if build_count >= limit:
+                    raise HTTPException(
+                        status_code=402,
+                        detail="Engineering quota exceeded. Upgrade your license for more builds."
+                    )
+
+                cur.execute(
+                    "UPDATE licenses SET build_count = build_count + 1 "
+                    "WHERE email = %s",
+                    (req.user_email,)
+                )
                 conn.commit()
-        log.info("Build %d saved to database.", build_id)
+                log.info(
+                    "Forge queued: user=%s project='%s' depth=%s builds=%d/%d",
+                    req.user_email, project_clean[:40], req.detail_level,
+                    build_count + 1, limit
+                )
+    except HTTPException:
+        raise
     except Exception as e:
-        log.error("DB save failed: %s", e)
-
-    # 5 — Absorb into Conception (awaited directly — fixes ensure_future bug)
-    if build_id:
-        await _absorb_into_conception(
-            user_email    = user_email,
-            junk_desc     = junk_desc,
-            project_type  = project_type,
-            blueprint     = blueprint,
-            grok_notes    = grok_out,
-            claude_notes  = notes.get("review_notes", ""),
-            build_id      = build_id,
-            tokens_used   = total_tokens,
-        )
-
-    return {
-        "status":                  "complete",
-        "build_id":                build_id,
-        "user_email":              user_email,
-        "project_type":            project_type,
-        "detail_level":            detail_level,
-        "content":                 blueprint,
-        "schematic_svg":           schematic_svg,
-        "grok_analysis":           grok_out,
-        "review_notes":            notes.get("review_notes", ""),
-        "safety_flags":            notes.get("safety_flags", []),
-        "innovations":             notes.get("innovations", []),
-        "difficulty":              notes.get("difficulty_rating", "Unknown"),
-        "build_time":              notes.get("estimated_build_time", "Unknown"),
-        "cost_estimate":           notes.get("estimated_cost_usd", "Unknown"),
-        "tags":                    notes.get("tags", []),
-        "conception_ready":        notes.get("conception_ready", False),
-        "tokens_used":             total_tokens,
-        "agents_used":             ["GROK-3", "CLAUDE-SONNET", "GEMINI-FLASH"],
-        "conception_context_used": bool(ctx),
-    }
-
-
-# ── CELERY TASK ────────────────────────────────────────────────────────────────
-
-@celery_app.task(
-    bind=True,
-    name="ai_worker.forge_blueprint_task",
-    max_retries=2,
-    soft_time_limit=300,
-    time_limit=330,
-)
-def forge_blueprint_task(self,
-                          user_email: str,
-                          junk_desc: str,
-                          project_type: str,
-                          detail_level: str = "Standard"):
-    log.info("Forge started: %s | %s | %s", user_email, project_type, detail_level)
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            _forge_pipeline(user_email, junk_desc, project_type, detail_level, task=self)
-        )
-    except Exception as e:
-        log.error("Forge pipeline failed: %s", e)
-        raise self.retry(exc=e, countdown=10)
+        conn.rollback()
+        log.error("Database error during quota check: %s", e)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        loop.close()
+        db_pool.putconn(conn)
+
+    # ── DISPATCH TO CELERY ──
+    # Argument order MUST match ai_worker.forge_blueprint_task signature:
+    #   forge_blueprint_task(self, user_email, junk_desc, project_type, detail_level)
+    task = celery_app.send_task(
+        "ai_worker.forge_blueprint_task",
+        args=[req.user_email, inventory_clean, project_clean, req.detail_level]
+    )
+    return {"status": "processing", "task_id": task.id}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TASK STATUS POLLING
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/generate/status/{tid}", dependencies=[Depends(verify_key)])
+def chk_task(tid: str):
+    res = AsyncResult(tid, app=celery_app)
+
+    if res.state == "SUCCESS":
+        return {"status": "complete", "result": res.result}
+
+    if res.state == "FAILURE":
+        return {"status": "failed", "error": str(res.info)}
+
+    if res.state == "PROGRESS":
+        message = "Processing..."
+        if isinstance(res.info, dict):
+            message = res.info.get("message", message)
+        return {"status": "processing", "message": message}
+
+    # PENDING or STARTED
+    return {"status": "processing", "message": "Initializing Round Table..."}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ARENA CHAT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/arena/chat/send", dependencies=[Depends(verify_key)])
+def send_chat(msg: ChatMsg):
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Chat service unavailable.")
+    try:
+        entry = json.dumps({
+            "user": msg.user_name,
+            "tier": msg.tier,
+            "text": msg.message,
+            "time": datetime.utcnow().strftime("%H:%M")
+        })
+        redis_client.lpush("global_chat", entry)
+        redis_client.ltrim("global_chat", 0, 49)
+    except Exception as e:
+        log.error("Chat send failed: %s", e)
+        raise HTTPException(status_code=500, detail="Chat send failed.")
+    return {"status": "ok"}
+
+
+@app.get("/arena/chat/recent", dependencies=[Depends(verify_key)])
+def get_chat():
+    if not redis_client:
+        return []
+    try:
+        messages = redis_client.lrange("global_chat", 0, 49)
+        return [json.loads(m) for m in messages][::-1]
+    except Exception as e:
+        log.error("Chat fetch failed: %s", e)
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ROBOT BATTLE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/arena/battle", dependencies=[Depends(verify_key)])
+def battle(req: BattleReq):
+    task = celery_app.send_task(
+        "ai_worker.simulate_battle_task",
+        args=[req.robot_a_name, req.robot_a_specs, req.robot_b_name, req.robot_b_specs]
+    )
+    return {"status": "processing", "task_id": task.id}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HEALTH CHECK
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/health")
+def health():
+    """Deep health check — verifies DB and Redis are alive."""
+    status = {"api": "ok", "database": "unknown", "redis": "unknown"}
+
+    # Check database
+    try:
+        conn = db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            status["database"] = "ok"
+        finally:
+            db_pool.putconn(conn)
+    except Exception as e:
+        status["database"] = f"error: {e}"
+
+    # Check Redis
+    try:
+        if redis_client and redis_client.ping():
+            status["redis"] = "ok"
+        else:
+            status["redis"] = "unavailable"
+    except Exception as e:
+        status["redis"] = f"error: {e}"
+
+    return status
