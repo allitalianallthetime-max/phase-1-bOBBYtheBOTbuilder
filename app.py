@@ -92,8 +92,7 @@ if not st.session_state.logged_in:
 
     # ── HERO ──
     st.markdown("""
-        <div style='text-align:center; padding:40px 20px 20px;'>
-          <div style='font-size:64px; margin-bottom:8px;'>&#9881;&#65039;</div>
+        <div style='text-align:center; padding:20px 20px 0;'>
           <h1 style='color:#FF4500; font-size:42px; margin:0; letter-spacing:2px;'>
             THE BUILDER FOUNDRY</h1>
           <p style='color:#94A3B8; font-size:20px; margin-top:8px; max-width:700px;
@@ -102,6 +101,10 @@ if not st.session_state.logged_in:
             AI-powered engineering blueprints from the parts you already have.</p>
         </div>
     """, unsafe_allow_html=True)
+
+    # Hero banner image
+    if os.path.exists("hero_banner.jpg"):
+        st.image("hero_banner.jpg", use_container_width=True)
 
     # ── PROBLEM → SOLUTION ──
     st.markdown("""
