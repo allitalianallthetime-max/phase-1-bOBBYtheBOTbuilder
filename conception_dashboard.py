@@ -254,6 +254,16 @@ def dashboard_html(password: str = ""):
         {"angle": "Conception Origin", "desc": "Phase 1 of an AI that will eventually walk in a body", "platforms": "Reddit, HN"},
     ])
 
+    # Pre-compute sections that need dict iteration (can't use {{}} in f-strings)
+    tier_html = ''.join(
+        f'<div class="row"><span class="tier t-{t}">{t.upper()}</span><span>{c}</span></div>'
+        for t, c in (data.get("licenses_by_tier") or {}).items()
+    )
+    platform_html = ''.join(
+        f'<div class="row"><span class="lbl">{plat}</span><span>{cnt} posts</span></div>'
+        for plat, cnt in (data.get("posts_by_platform") or {}).items()
+    )
+
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -342,6 +352,14 @@ td {{ padding:6px; border-bottom:1px solid #1E293B; }}
 
 <!-- GENERATE POST -->
 <div class="sec">
+  <h2>MARKETING STATS</h2>
+  <div class="row"><span class="lbl">Total Posts</span><span>{data.get('total_posts',0)}</span></div>
+  <div class="row"><span class="lbl">Posts This Week</span><span>{data.get('posts_this_week',0)}</span></div>
+  <div class="row"><span class="lbl">Pending Drafts</span><span>{data.get('pending_drafts',0)}</span></div>
+  {platform_html}
+</div>
+
+<div class="sec">
   <h2>GENERATE MARKETING POST</h2>
   <div class="gen-form">
     <select id="gen-platform">
@@ -422,8 +440,7 @@ td {{ padding:6px; border-bottom:1px solid #1E293B; }}
 <!-- LICENSES BY TIER -->
 <div class="sec">
   <h2>LICENSES BY TIER</h2>
-  {''.join(f'<div class="row"><span class="tier t-{t}">{t.upper()}</span><span>{c}</span></div>'
-  for t, c in data.get('licenses_by_tier',{{}}).items())}
+  {tier_html}
 </div>
 
 <script>
