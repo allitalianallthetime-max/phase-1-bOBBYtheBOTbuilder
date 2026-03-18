@@ -53,11 +53,14 @@ def _check_pass(password: str):
         raise HTTPException(status_code=403, detail="Invalid password.")
 
 
-def _safe_query(cur, sql, params=None):
+def _safe_query(conn, cur, sql, params=None):
+    """Run a query. If the table doesn't exist, rollback and return empty."""
     try:
         cur.execute(sql, params)
         return cur.fetchall()
-    except Exception:
+    except Exception as e:
+        conn.rollback()  # Clear the error state so next query can run
+        log.debug("Query skipped (table may not exist): %s", e)
         return []
 
 
@@ -72,77 +75,76 @@ def dashboard_data(password: str = ""):
 
     with get_db() as conn:
         cur = conn.cursor()
-        conn.autocommit = True
 
         # Licenses
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM licenses")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM licenses")
         data["total_licenses"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT tier, COUNT(*) FROM licenses WHERE status='active' GROUP BY tier")
+        rows = _safe_query(conn, cur, "SELECT tier, COUNT(*) FROM licenses WHERE status='active' GROUP BY tier")
         data["licenses_by_tier"] = {r[0]: r[1] for r in rows} if rows else {}
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM licenses WHERE tier='trial' AND status='active'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM licenses WHERE tier='trial' AND status='active'")
         data["trial_users"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM licenses WHERE tier != 'trial' AND status='active'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM licenses WHERE tier != 'trial' AND status='active'")
         data["paid_users"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM licenses WHERE created_at >= NOW() - INTERVAL '24 hours'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM licenses WHERE created_at >= NOW() - INTERVAL '24 hours'")
         data["signups_today"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM licenses WHERE created_at >= NOW() - INTERVAL '7 days'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM licenses WHERE created_at >= NOW() - INTERVAL '7 days'")
         data["signups_this_week"] = rows[0][0] if rows else 0
 
         # Builds
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM builds")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM builds")
         data["total_builds"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM builds WHERE created_at >= NOW() - INTERVAL '24 hours'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM builds WHERE created_at >= NOW() - INTERVAL '24 hours'")
         data["builds_today"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM builds WHERE created_at >= NOW() - INTERVAL '7 days'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM builds WHERE created_at >= NOW() - INTERVAL '7 days'")
         data["builds_this_week"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COALESCE(SUM(tokens_used), 0) FROM builds")
+        rows = _safe_query(conn, cur, "SELECT COALESCE(SUM(tokens_used), 0) FROM builds")
         data["total_tokens"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT project_type, COUNT(*) as cnt FROM builds GROUP BY project_type ORDER BY cnt DESC LIMIT 5")
+        rows = _safe_query(conn, cur, "SELECT project_type, COUNT(*) as cnt FROM builds GROUP BY project_type ORDER BY cnt DESC LIMIT 5")
         data["top_projects"] = [{"project": r[0], "count": r[1]} for r in rows] if rows else []
 
-        rows = _safe_query(cur, "SELECT user_email, project_type, tokens_used, created_at FROM builds ORDER BY created_at DESC LIMIT 10")
+        rows = _safe_query(conn, cur, "SELECT user_email, project_type, tokens_used, created_at FROM builds ORDER BY created_at DESC LIMIT 10")
         data["recent_builds"] = [
             {"email": r[0], "project": r[1], "tokens": r[2], "time": r[3].strftime("%Y-%m-%d %H:%M") if r[3] else ""}
             for r in rows
         ] if rows else []
 
         # Marketing
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM marketing_posts WHERE status='posted'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM marketing_posts WHERE status='posted'")
         data["total_posts"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM marketing_posts WHERE status='draft'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM marketing_posts WHERE status='draft'")
         data["pending_drafts"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM marketing_posts WHERE status='posted' AND posted_at >= NOW() - INTERVAL '7 days'")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM marketing_posts WHERE status='posted' AND posted_at >= NOW() - INTERVAL '7 days'")
         data["posts_this_week"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT platform, COUNT(*) FROM marketing_posts WHERE status='posted' GROUP BY platform ORDER BY COUNT(*) DESC")
+        rows = _safe_query(conn, cur, "SELECT platform, COUNT(*) FROM marketing_posts WHERE status='posted' GROUP BY platform ORDER BY COUNT(*) DESC")
         data["posts_by_platform"] = {r[0]: r[1] for r in rows} if rows else {}
 
         # Trials
-        rows = _safe_query(cur, "SELECT COUNT(*) FROM licenses WHERE tier='trial' AND build_count > 0")
+        rows = _safe_query(conn, cur, "SELECT COUNT(*) FROM licenses WHERE tier='trial' AND build_count > 0")
         data["trials_used"] = rows[0][0] if rows else 0
 
-        rows = _safe_query(cur, "SELECT notes FROM licenses WHERE tier='trial' AND notes LIKE '%%email_optin=True%%'")
+        rows = _safe_query(conn, cur, "SELECT notes FROM licenses WHERE tier='trial' AND notes LIKE '%%email_optin=True%%'")
         data["email_optins"] = len(rows) if rows else 0
 
-        rows = _safe_query(cur, "SELECT email, created_at FROM licenses WHERE tier='trial' AND notes LIKE '%%email_optin=True%%' ORDER BY created_at DESC LIMIT 50")
+        rows = _safe_query(conn, cur, "SELECT email, created_at FROM licenses WHERE tier='trial' AND notes LIKE '%%email_optin=True%%' ORDER BY created_at DESC LIMIT 50")
         data["mailing_list"] = [
             {"email": r[0], "signed_up": r[1].strftime("%Y-%m-%d") if r[1] else ""}
             for r in rows
         ] if rows else []
 
         # Drafts ready to post
-        rows = _safe_query(cur,
+        rows = _safe_query(conn, cur,
             "SELECT id, platform, subreddit, title, body, created_at "
             "FROM marketing_posts WHERE status='draft' ORDER BY created_at DESC LIMIT 20")
         data["drafts"] = [
@@ -153,7 +155,7 @@ def dashboard_data(password: str = ""):
         ] if rows else []
 
         # Weekly schedule
-        rows = _safe_query(cur,
+        rows = _safe_query(conn, cur,
             "SELECT day_of_week, platform, subreddit, angle, active "
             "FROM marketing_schedule WHERE active=TRUE ORDER BY day_of_week, platform")
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
