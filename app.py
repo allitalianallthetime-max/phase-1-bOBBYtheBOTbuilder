@@ -406,15 +406,29 @@ if not st.session_state.logged_in:
     with t2:
         trial_email = st.text_input("Email Address", placeholder="you@example.com",
                                     key="trial_email")
+        email_optin = st.checkbox(
+            "I agree to receive updates, tips, and new feature announcements from The Builder Foundry.",
+            value=True, key="trial_optin"
+        )
+        st.markdown(
+            "<div style='color:#475569; font-size:10px; margin-top:-8px; margin-bottom:8px;'>"
+            "We respect your inbox. Unsubscribe anytime.</div>",
+            unsafe_allow_html=True
+        )
         if st.button("🚀 GET MY FREE BUILD", use_container_width=True):
             if not trial_email or "@" not in trial_email:
                 st.warning("Enter a valid email address.")
+            elif not email_optin:
+                st.warning("Please agree to receive updates to activate your free trial.")
             else:
                 try:
                     with st.spinner("Creating your trial license..."):
                         resp = httpx.post(
                             f"{AUTH_URL}/auth/trial",
-                            json={"email": trial_email.strip().lower()},
+                            json={
+                                "email": trial_email.strip().lower(),
+                                "email_optin": True,
+                            },
                             headers=_h(), timeout=10.0
                         )
                         if resp.status_code == 200:
