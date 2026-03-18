@@ -1,32 +1,24 @@
 """
 APP.PY — BUILDER FOUNDRY STREAMLIT FRONTEND
 =============================================
-Public landing page → License auth → Forge pipeline → Vault → Scanner → DNA → Chat
+Public landing page -> License auth -> Forge -> Vault -> Scanner -> DNA -> Chat
 
-Fixes applied:
-  - base64 import moved to top level
-  - Logout properly resets None fields to None (not "")
-  - Agent display updated to GEMINI 2.5 FLASH
-  - 403 error handler wrapped in try/except for non-JSON responses
-  - Warm-up state cleared on logout
-  - Scanner uses Streamlit rerun pattern instead of blocking loop
-  - Input length validation prevents oversized payloads
-  - All httpx calls have explicit timeouts
+Refactored: all HTTP calls use app_helpers (api_get, api_post, api_get_raw).
+Repeated patterns extracted into functions. Error handling is consistent.
 """
 
 import streamlit as st
 import os
 import base64
-import httpx
 import time
-import json
 from dotenv import load_dotenv
+from app_helpers import api_get, api_post, api_get_raw, ping_service, APIError
 
 try:
     from builder_styles import BUILDER_CSS, FORGE_HEADER_HTML
 except ImportError:
     BUILDER_CSS = ""
-    FORGE_HEADER_HTML = "<h1 style='color:#FF4500; text-align:center;'>⚙️ THE BUILDER FOUNDRY</h1>"
+    FORGE_HEADER_HTML = "<h1 style='color:#FF4500; text-align:center;'>THE BUILDER FOUNDRY</h1>"
 
 # ── CONFIGURATION ──────────────────────────────────────────────────────────────
 load_dotenv()
@@ -41,18 +33,10 @@ AUTH_URL       = os.getenv("AUTH_SERVICE_URL",      "http://localhost:8001")
 AI_URL         = os.getenv("AI_SERVICE_URL",        "http://localhost:8002")
 WORKSHOP_URL   = os.getenv("WORKSHOP_SERVICE_URL",  "http://localhost:8003")
 EXPORT_URL     = os.getenv("EXPORT_SERVICE_URL",    "http://localhost:8004")
-ANALYTICS_URL  = os.getenv("ANALYTICS_SERVICE_URL", "http://localhost:8005")
 BILLING_URL    = os.getenv("BILLING_SERVICE_URL",   "http://localhost:8006")
 STRIPE_STARTER = os.getenv("STRIPE_URL_STARTER",    "#")
 STRIPE_PRO     = os.getenv("STRIPE_URL_PRO",        "#")
 STRIPE_MASTER  = os.getenv("STRIPE_URL_MASTER",     "#")
-INTERNAL_KEY   = os.getenv("INTERNAL_API_KEY",      "")
-
-
-def _h():
-    """Internal API auth header."""
-    return {"x-internal-key": INTERNAL_KEY}
-
 
 # ── APPLY THEME ────────────────────────────────────────────────────────────────
 if BUILDER_CSS:
@@ -60,34 +44,72 @@ if BUILDER_CSS:
 
 # ── SESSION STATE ──────────────────────────────────────────────────────────────
 _defaults = {
-    "logged_in":      False,
-    "user_email":     "",
-    "user_name":      "",
-    "tier":           "",
-    "jwt_token":      "",
-    "active_task":    None,
-    "vault_data":     None,
-    "active_tab":     "forge",
-    "scan_task":      None,
-    "landing_warmed": False,
-    "services_warmed": False,
+    "logged_in": False, "user_email": "", "user_name": "", "tier": "",
+    "jwt_token": "", "active_task": None, "vault_data": None,
+    "active_tab": "forge", "scan_task": None, "scan_attempts": 0,
+    "landing_warmed": False, "services_warmed": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 
+# ── REUSABLE UI HELPERS ───────────────────────────────────────────────────────
+
+def _download_buttons(build_id: str, key_suffix: str = ""):
+    """Render .md and .txt download buttons for a build."""
+    col1, col2 = st.columns(2)
+    with col1:
+        data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{build_id}?fmt=md")
+        if ok:
+            st.download_button(
+                "📥 DOWNLOAD (.md)", data=data,
+                file_name=f"blueprint_{build_id}.md", mime="text/markdown",
+                key=f"dlmd_{build_id}{key_suffix}", use_container_width=True
+            )
+    with col2:
+        data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{build_id}?fmt=txt")
+        if ok:
+            st.download_button(
+                "📥 DOWNLOAD (.txt)", data=data,
+                file_name=f"blueprint_{build_id}.txt", mime="text/plain",
+                key=f"dltxt_{build_id}{key_suffix}", use_container_width=True
+            )
+
+
+def _show_schematic(schematic: str, build_id: str):
+    """Render SVG schematic as base64 image if valid."""
+    if not schematic or "<svg" not in schematic or "</svg>" not in schematic:
+        return
+    svg_start = schematic.find("<svg")
+    svg_end = schematic.rfind("</svg>") + 6
+    clean_svg = schematic[svg_start:svg_end]
+    svg_b64 = base64.b64encode(clean_svg.encode("utf-8")).decode("utf-8")
+
+    st.markdown("#### 📐 TECHNICAL SCHEMATIC")
+    st.markdown(
+        f'<div style="background:white; padding:16px; border-radius:8px; '
+        f'border:1px solid #334155; overflow-x:auto; text-align:center;">'
+        f'<img src="data:image/svg+xml;base64,{svg_b64}" '
+        f'style="max-width:100%; height:auto;" /></div>',
+        unsafe_allow_html=True
+    )
+    st.download_button(
+        "📐 DOWNLOAD SCHEMATIC (.svg)", data=clean_svg,
+        file_name=f"schematic_{build_id or 'draft'}.svg",
+        mime="image/svg+xml", use_container_width=True
+    )
+    st.markdown("---")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# LANDING PAGE + AUTH GATE (shown when not logged in)
+# LANDING PAGE (not logged in)
 # ══════════════════════════════════════════════════════════════════════════════
 if not st.session_state.logged_in:
 
-    # ── Silently wake AI service while visitor reads landing page ──
+    # Silently wake AI service
     if not st.session_state.landing_warmed:
-        try:
-            httpx.get(f"{AI_URL}/health", timeout=3.0)
-        except Exception:
-            pass
+        ping_service(f"{AI_URL}/health")
         st.session_state.landing_warmed = True
 
     # ── HERO ──
@@ -102,11 +124,10 @@ if not st.session_state.logged_in:
         </div>
     """, unsafe_allow_html=True)
 
-    # Hero banner image
     if os.path.exists("hero_banner.jpg"):
         st.image("hero_banner.jpg", use_container_width=True)
 
-    # ── PROBLEM → SOLUTION ──
+    # ── PROBLEM / SOLUTION ──
     st.markdown("""
         <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
           <div style='display:flex; gap:20px; flex-wrap:wrap; justify-content:center;'>
@@ -241,7 +262,6 @@ if not st.session_state.logged_in:
           <p style='color:#64748B; font-size:14px;'>Real output from a real forge</p>
         </div>
     """, unsafe_allow_html=True)
-
     st.markdown("""
         <div style='max-width:900px; margin:0 auto;'>
           <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
@@ -336,11 +356,8 @@ if not st.session_state.logged_in:
               <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
                 $25<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
               <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                25 blueprint builds per month<br>
-                Full Round Table access<br>
-                Technical schematics<br>
-                Equipment scanner<br>
-                Blueprint downloads</div>
+                25 blueprint builds per month<br>Full Round Table access<br>
+                Technical schematics<br>Equipment scanner<br>Blueprint downloads</div>
             </div>
         """, unsafe_allow_html=True)
         st.link_button("⚡ GET STARTER", STRIPE_STARTER, use_container_width=True)
@@ -354,11 +371,8 @@ if not st.session_state.logged_in:
               <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
                 $100<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
               <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                100 blueprint builds per month<br>
-                Everything in Starter<br>
-                Priority processing<br>
-                Conception DNA insights<br>
-                Best value per build</div>
+                100 blueprint builds per month<br>Everything in Starter<br>
+                Priority processing<br>Conception DNA insights<br>Best value per build</div>
             </div>
         """, unsafe_allow_html=True)
         st.link_button("🔥 GET PRO", STRIPE_PRO, use_container_width=True)
@@ -371,11 +385,8 @@ if not st.session_state.logged_in:
               <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
                 $999<span style='font-size:16px; color:#94A3B8;'>/yr</span></div>
               <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                Unlimited builds forever<br>
-                Everything in Pro<br>
-                Schools &amp; makerspaces<br>
-                Direct Conception access<br>
-                Annual lock-in savings</div>
+                Unlimited builds forever<br>Everything in Pro<br>
+                Schools &amp; makerspaces<br>Direct Conception access<br>Annual lock-in savings</div>
             </div>
         """, unsafe_allow_html=True)
         st.link_button("👑 GET MASTER", STRIPE_MASTER, use_container_width=True)
@@ -391,8 +402,7 @@ if not st.session_state.logged_in:
             This is Phase 1 of <strong style='color:#FF4500;'>Conception</strong> —
             an advanced AI being built to learn from every blueprint, protect families,
             run businesses, and eventually walk in a physical body.<br><br>
-            Every blueprint you forge makes Conception smarter.
-          </p>
+            Every blueprint you forge makes Conception smarter.</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -424,32 +434,22 @@ if not st.session_state.logged_in:
             elif not email_optin:
                 st.warning("Please agree to receive updates to activate your free trial.")
             else:
-                try:
-                    with st.spinner("Creating your trial license..."):
-                        resp = httpx.post(
-                            f"{AUTH_URL}/auth/trial",
-                            json={
-                                "email": trial_email.strip().lower(),
-                                "email_optin": True,
-                            },
-                            headers=_h(), timeout=10.0
-                        )
-                        if resp.status_code == 200:
-                            trial_data = resp.json()
-                            trial_key = trial_data.get("key", "")
-                            st.success(f"Your license key: **{trial_key}**")
-                            st.info("Copy this key and use it to log in below. You have 1 free build and 7 days!")
-                        elif resp.status_code == 409:
-                            detail = resp.json().get("detail", "Email already registered.")
-                            st.warning(detail)
+                with st.spinner("Creating your trial license..."):
+                    result = api_post(
+                        f"{AUTH_URL}/auth/trial",
+                        {"email": trial_email.strip().lower(), "email_optin": True}
+                    )
+                    if isinstance(result, APIError):
+                        if result.status == 409:
+                            st.warning(result.detail)
+                        elif result.status == 429:
+                            st.warning("Too many trial requests. Please wait a few minutes.")
                         else:
-                            try:
-                                detail = resp.json().get("detail", "Could not create trial.")
-                            except Exception:
-                                detail = "Could not create trial."
-                            st.error(detail)
-                except Exception as e:
-                    st.error(f"Service unavailable: {e}")
+                            st.error(result.detail)
+                    else:
+                        trial_key = result.get("key", "")
+                        st.success(f"Your license key: **{trial_key}**")
+                        st.info("Copy this key and use it to log in below. You have 1 free build and 7 days!")
 
     # ── LOGIN ──
     st.markdown("---")
@@ -470,26 +470,22 @@ if not st.session_state.logged_in:
                     st.warning("Enter a license key.")
                 else:
                     with st.spinner("Verifying credentials..."):
-                        try:
-                            resp = httpx.post(
-                                f"{AUTH_URL}/verify-license",
-                                json={"license_key": license_key},
-                                headers=_h(), timeout=10.0
-                            )
-                            if resp.status_code == 200:
-                                d = resp.json()
-                                st.session_state.logged_in  = True
-                                st.session_state.user_email = d["email"]
-                                st.session_state.user_name  = d["name"]
-                                st.session_state.tier       = d["tier"]
-                                st.session_state.jwt_token  = d["token"]
-                                st.rerun()
-                            elif resp.status_code == 403:
-                                st.error("License invalid, expired, or revoked.")
+                        result = api_post(
+                            f"{AUTH_URL}/verify-license",
+                            {"license_key": license_key}
+                        )
+                        if isinstance(result, APIError):
+                            if result.status == 429:
+                                st.warning("Too many login attempts. Wait a few minutes.")
                             else:
-                                st.error(f"Auth failed: {resp.status_code}")
-                        except Exception as e:
-                            st.error(f"Auth service offline: {e}")
+                                st.error(result.detail)
+                        else:
+                            st.session_state.logged_in  = True
+                            st.session_state.user_email = result["email"]
+                            st.session_state.user_name  = result["name"]
+                            st.session_state.tier       = result["tier"]
+                            st.session_state.jwt_token  = result["token"]
+                            st.rerun()
         with col_b:
             st.link_button("GET A LICENSE", STRIPE_STARTER, use_container_width=True)
 
@@ -504,18 +500,14 @@ if not st.session_state.logged_in:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOGGED-IN APP (everything below requires authentication)
+# LOGGED-IN APP
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Show forge header ──
 st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
 
-# ── Warm up AI service on first logged-in page load ──
+# Warm up AI service
 if not st.session_state.services_warmed:
-    try:
-        httpx.get(f"{AI_URL}/health", timeout=5.0)
-    except Exception:
-        pass
+    ping_service(f"{AI_URL}/health", timeout=5.0)
     st.session_state.services_warmed = True
 
 
@@ -527,7 +519,7 @@ with st.sidebar:
         st.image("aoc3po_logo.png", width=200)
 
     st.markdown("---")
-    tier_colors = {"master": "#FFD700", "pro": "#FF4500", "starter": "#94A3B8"}
+    tier_colors = {"master": "#FFD700", "pro": "#FF4500", "starter": "#94A3B8", "trial": "#10B981"}
     tc = tier_colors.get(st.session_state.tier, "#94A3B8")
     st.markdown(f"""
         <div style='background:#1E293B; padding:12px; border-radius:6px;
@@ -537,13 +529,12 @@ with st.sidebar:
           <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
             {st.session_state.user_email}</div>
           <div style='color:{tc}; font-size:11px; font-weight:bold; margin-top:4px;'>
-            ⬡ {st.session_state.tier.upper()} CLEARANCE</div>
+            {st.session_state.tier.upper()} CLEARANCE</div>
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # Nav buttons
     if st.button("⚙️  FORGE BLUEPRINT",   use_container_width=True):
         st.session_state.active_tab = "forge"
     if st.button("🗄️  CONCEPTION VAULT",  use_container_width=True):
@@ -559,11 +550,8 @@ with st.sidebar:
     st.markdown("---")
 
     # Quota meter
-    try:
-        q = httpx.get(
-            f"{BILLING_URL}/billing/quota/{st.session_state.user_email}",
-            headers=_h(), timeout=5.0
-        ).json()
+    q = api_get(f"{BILLING_URL}/billing/quota/{st.session_state.user_email}", timeout=5.0)
+    if not isinstance(q, APIError):
         used  = q.get("build_count", 0)
         limit = q.get("build_limit", 25)
         pct   = min(used / max(limit, 1), 1.0)
@@ -588,23 +576,15 @@ with st.sidebar:
                         Upgrade to keep forging blueprints</div>
                     </div>
                 """, unsafe_allow_html=True)
-                st.link_button("⚡ GET STARTER $9.99/mo", STRIPE_STARTER, use_container_width=True)
+                st.link_button("GET STARTER $25/mo", STRIPE_STARTER, use_container_width=True)
             elif st.session_state.tier == "starter":
                 st.link_button("UPGRADE TO PRO", STRIPE_PRO, use_container_width=True)
             elif st.session_state.tier == "pro":
                 st.link_button("UPGRADE TO MASTER", STRIPE_MASTER, use_container_width=True)
-    except Exception:
-        pass
 
     st.markdown("---")
-    st.markdown("### 🛠️ MAINTENANCE FUND")
-    st.markdown(
-        f"<a href='{STRIPE_STARTER}' target='_blank' style='color:#FF4500;'>☕ TIP THE TECH CUP</a>",
-        unsafe_allow_html=True
-    )
-    st.markdown("---")
-
     if st.button("LOGOUT", use_container_width=True):
+        st.session_state.clear()
         for k, v in _defaults.items():
             st.session_state[k] = v
         st.rerun()
@@ -614,7 +594,7 @@ with st.sidebar:
 # TAB: FORGE BLUEPRINT
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.active_tab == "forge":
-    st.markdown("### 🛡️ ACTIVE ENGINEERING AGENTS")
+    st.markdown("### ACTIVE ENGINEERING AGENTS")
     cols = st.columns(3)
     with cols[0]:
         st.markdown("#### 🟠 GROK-3")
@@ -641,8 +621,7 @@ if st.session_state.active_tab == "forge":
         inventory_input = st.text_area(
             "INVENTORY MANIFEST / JUNK DESCRIPTION",
             placeholder="List every item you have — motors, machines, scrap metal, electronics...",
-            height=260,
-            max_chars=5000
+            height=260, max_chars=5000
         )
 
     with col_right:
@@ -660,201 +639,103 @@ if st.session_state.active_tab == "forge":
             elif not inventory_input or not inventory_input.strip():
                 st.error("Inventory manifest is required.")
             elif len(inventory_input.strip()) < 10:
-                st.error("Describe your inventory in more detail (at least a few items).")
+                st.error("Describe your inventory in more detail.")
             else:
-                try:
-                    with st.spinner("Initiating Round Table protocols..."):
-                        payload = {
-                            "junk_desc":    inventory_input.strip(),
-                            "project_type": project_name.strip(),
-                            "detail_level": detail_level,
-                            "user_email":   st.session_state.user_email,
-                        }
-                        resp = httpx.post(
-                            f"{AI_URL}/generate",
-                            json=payload, headers=_h(), timeout=60.0
-                        )
-                        if resp.status_code == 200:
-                            st.session_state.active_task = resp.json().get("task_id")
-                            st.success("Agents deployed. Blueprint forging...")
-                        elif resp.status_code == 402:
-                            st.error("Build quota exceeded. Upgrade your license.")
-                        elif resp.status_code == 403:
-                            try:
-                                detail = resp.json().get("detail", "Request blocked.")
-                            except Exception:
-                                detail = "Request blocked by safety filter."
-                            st.error(f"🛡️ {detail}")
-                        elif resp.status_code == 400:
-                            try:
-                                detail = resp.json().get("detail", "Invalid input.")
-                            except Exception:
-                                detail = "Invalid input."
-                            st.warning(f"⚠️ {detail}")
+                with st.spinner("Initiating Round Table protocols..."):
+                    result = api_post(f"{AI_URL}/generate", {
+                        "junk_desc":    inventory_input.strip(),
+                        "project_type": project_name.strip(),
+                        "detail_level": detail_level,
+                        "user_email":   st.session_state.user_email,
+                    }, timeout=60.0)
+
+                    if isinstance(result, APIError):
+                        if result.status == 429:
+                            st.warning("Too many forge requests. Wait a few minutes.")
                         else:
-                            st.error(f"Forge refused: HTTP {resp.status_code}")
-                except httpx.TimeoutException:
-                    st.warning("Service is waking up. Please try again in a few seconds.")
-                except Exception as e:
-                    st.error(f"Connection failure: {e}")
+                            st.error(result.detail)
+                    else:
+                        st.session_state.active_task = result.get("task_id")
+                        st.success("Agents deployed. Blueprint forging...")
 
     # ── TASK POLLING ──
     if st.session_state.active_task:
         st.markdown("---")
-        st.markdown("### 🏗️ CURRENT BUILD LOG")
+        st.markdown("### CURRENT BUILD LOG")
         task_id = st.session_state.active_task
-        try:
-            sr = httpx.get(
-                f"{AI_URL}/generate/status/{task_id}",
-                headers=_h(), timeout=15.0
-            )
-            if sr.status_code == 200:
-                data  = sr.json()
-                state = data.get("status")
 
-                if state == "complete":
-                    st.balloons()
-                    st.markdown("#### ✅ SYNTHESIS COMPLETE")
+        result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
 
-                    result    = data.get("result", {})
-                    blueprint = result.get("content", "")
-                    build_id  = result.get("build_id", "")
-                    schematic = result.get("schematic_svg", "")
-
-                    # ── Display schematic as base64 image ──
-                    if schematic and "<svg" in schematic and "</svg>" in schematic:
-                        svg_start = schematic.find("<svg")
-                        svg_end   = schematic.rfind("</svg>") + 6
-                        clean_svg = schematic[svg_start:svg_end]
-                        svg_b64   = base64.b64encode(clean_svg.encode("utf-8")).decode("utf-8")
-
-                        st.markdown("#### 📐 TECHNICAL SCHEMATIC")
-                        st.markdown(
-                            f'<div style="background:white; padding:16px; '
-                            f'border-radius:8px; border:1px solid #334155; '
-                            f'overflow-x:auto; text-align:center;">'
-                            f'<img src="data:image/svg+xml;base64,{svg_b64}" '
-                            f'style="max-width:100%; height:auto;" />'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                        st.download_button(
-                            "📐 DOWNLOAD SCHEMATIC (.svg)",
-                            data=clean_svg,
-                            file_name=f"schematic_{build_id or 'draft'}.svg",
-                            mime="image/svg+xml",
-                            use_container_width=True
-                        )
-                        st.markdown("---")
-
-                    # ── Display blueprint text ──
-                    st.markdown(blueprint)
-
-                    # ── Download buttons ──
-                    if build_id:
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            try:
-                                dl = httpx.get(
-                                    f"{EXPORT_URL}/export/download/{build_id}?fmt=md",
-                                    headers=_h(), timeout=10.0
-                                )
-                                if dl.status_code == 200:
-                                    st.download_button(
-                                        "📥 DOWNLOAD BLUEPRINT (.md)",
-                                        data=dl.content,
-                                        file_name=f"blueprint_{build_id}.md",
-                                        mime="text/markdown",
-                                        use_container_width=True
-                                    )
-                            except Exception:
-                                pass
-                        with col2:
-                            try:
-                                dl = httpx.get(
-                                    f"{EXPORT_URL}/export/download/{build_id}?fmt=txt",
-                                    headers=_h(), timeout=10.0
-                                )
-                                if dl.status_code == 200:
-                                    st.download_button(
-                                        "📥 DOWNLOAD BLUEPRINT (.txt)",
-                                        data=dl.content,
-                                        file_name=f"blueprint_{build_id}.txt",
-                                        mime="text/plain",
-                                        use_container_width=True
-                                    )
-                            except Exception:
-                                pass
-
-                    st.info("Blueprint archived in Conception DNA Vault.")
-                    st.session_state.active_task = None
-
-                elif state == "failed":
-                    error_msg = data.get("error", "")
-                    if "TimeLimitExceeded" in error_msg:
-                        st.error("Blueprint timed out. Try Standard depth or a simpler project.")
-                    else:
-                        st.error("The Round Table failed to reach consensus. Check your manifest.")
-                    st.session_state.active_task = None
-
-                else:
-                    # PROGRESS / PENDING / STARTED
-                    msg = data.get("message", "Initializing Round Table protocols...")
-                    st.markdown(f"""
-                        <div style='background:#1E293B; padding:16px; border-radius:8px;
-                                    border-left:4px solid #FF4500; margin:8px 0;'>
-                          <div style='color:#FF4500; font-size:13px; font-weight:bold;
-                                      font-family:monospace; letter-spacing:1px;'>
-                            ROUND TABLE ACTIVE</div>
-                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
-                            {msg}</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    time.sleep(3)
-                    st.rerun()
-
-        except httpx.TimeoutException:
-            st.warning("Polling timed out. The forge is still running — page will refresh.")
+        if isinstance(result, APIError):
+            st.warning(f"Polling interrupted: {result.detail}")
             time.sleep(5)
             st.rerun()
-        except Exception as e:
-            st.warning(f"Polling interrupted: {e}")
+        else:
+            state = result.get("status")
+
+            if state == "complete":
+                st.balloons()
+                st.markdown("#### SYNTHESIS COMPLETE")
+
+                res       = result.get("result", {})
+                blueprint = res.get("content", "")
+                build_id  = res.get("build_id", "")
+                schematic = res.get("schematic_svg", "")
+
+                _show_schematic(schematic, build_id)
+                st.markdown(blueprint)
+                if build_id:
+                    _download_buttons(build_id)
+                st.info("Blueprint archived in Conception DNA Vault.")
+                st.session_state.active_task = None
+
+            elif state == "failed":
+                error_msg = result.get("error", "")
+                if "TimeLimitExceeded" in error_msg:
+                    st.error("Blueprint timed out. Try Standard depth or a simpler project.")
+                else:
+                    st.error("The Round Table failed to reach consensus. Check your manifest.")
+                st.session_state.active_task = None
+
+            else:
+                msg = result.get("message", "Initializing Round Table protocols...")
+                st.markdown(f"""
+                    <div style='background:#1E293B; padding:16px; border-radius:8px;
+                                border-left:4px solid #FF4500; margin:8px 0;'>
+                      <div style='color:#FF4500; font-size:13px; font-weight:bold;
+                                  font-family:monospace; letter-spacing:1px;'>
+                        ROUND TABLE ACTIVE</div>
+                      <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
+                        {msg}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+                time.sleep(3)
+                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: CONCEPTION VAULT
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "vault":
-    st.markdown("### 🗄️ CONCEPTION DNA VAULT")
+    st.markdown("### CONCEPTION DNA VAULT")
     st.caption("All blueprints archived for Conception's learning and your reference.")
 
     if st.session_state.vault_data is None:
         with st.spinner("Loading your vault..."):
-            try:
-                resp = httpx.get(
-                    f"{EXPORT_URL}/export/vault/{st.session_state.user_email}",
-                    headers=_h(), timeout=10.0
-                )
-                st.session_state.vault_data = resp.json() if resp.status_code == 200 else {}
-            except Exception:
-                st.session_state.vault_data = {}
+            result = api_get(f"{EXPORT_URL}/export/vault/{st.session_state.user_email}")
+            st.session_state.vault_data = result if not isinstance(result, APIError) else {}
 
     vault  = st.session_state.vault_data
     builds = vault.get("builds", [])
 
-    # Stats row
-    try:
-        stats = httpx.get(
-            f"{EXPORT_URL}/export/stats/{st.session_state.user_email}",
-            headers=_h(), timeout=8.0
-        ).json()
+    # Stats
+    stats = api_get(f"{EXPORT_URL}/export/stats/{st.session_state.user_email}", timeout=8.0)
+    if not isinstance(stats, APIError):
         s1, s2, s3, s4 = st.columns(4)
         s1.metric("Total Builds",     stats.get("total_builds", 0))
         s2.metric("Tokens Consumed",  f"{stats.get('total_tokens', 0):,}")
         s3.metric("Conception Ready", stats.get("conception_ready", 0))
         s4.metric("In Vault",         vault.get("count", 0))
-    except Exception:
-        pass
 
     st.markdown("---")
 
@@ -874,64 +755,38 @@ elif st.session_state.active_tab == "vault":
             if search and search.lower() not in proj.lower():
                 continue
 
-            with st.expander(
-                f"{'🧠' if ready else '📄'}  {proj}  —  {date}  |  {tokens:,} tokens"
-            ):
+            with st.expander(f"{'🧠' if ready else '📄'}  {proj}  —  {date}  |  {tokens:,} tokens"):
                 st.caption(preview)
                 col1, col2, col3 = st.columns(3)
-
                 with col1:
                     if st.button("📖 LOAD FULL BLUEPRINT", key=f"load_{bid}"):
-                        try:
-                            full = httpx.get(
-                                f"{EXPORT_URL}/export/blueprint/{bid}",
-                                headers=_h(), timeout=10.0
-                            ).json()
+                        full = api_get(f"{EXPORT_URL}/export/blueprint/{bid}")
+                        if not isinstance(full, APIError):
                             st.markdown("---")
                             st.markdown(full.get("blueprint", ""))
-                        except Exception as e:
-                            st.error(f"Failed to load: {e}")
-
+                        else:
+                            st.error(f"Failed to load: {full.detail}")
                 with col2:
-                    try:
-                        dl = httpx.get(
-                            f"{EXPORT_URL}/export/download/{bid}?fmt=md",
-                            headers=_h(), timeout=10.0
-                        )
-                        if dl.status_code == 200:
-                            st.download_button(
-                                "📥 .md", data=dl.content,
-                                file_name=f"blueprint_{bid}.md",
-                                mime="text/markdown",
-                                key=f"dlmd_{bid}",
-                                use_container_width=True
-                            )
-                    except Exception:
-                        pass
-
+                    data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{bid}?fmt=md")
+                    if ok:
+                        st.download_button("📥 .md", data=data,
+                                          file_name=f"blueprint_{bid}.md",
+                                          mime="text/markdown", key=f"dlmd_{bid}",
+                                          use_container_width=True)
                 with col3:
-                    try:
-                        dl = httpx.get(
-                            f"{EXPORT_URL}/export/download/{bid}?fmt=txt",
-                            headers=_h(), timeout=10.0
-                        )
-                        if dl.status_code == 200:
-                            st.download_button(
-                                "📥 .txt", data=dl.content,
-                                file_name=f"blueprint_{bid}.txt",
-                                mime="text/plain",
-                                key=f"dltxt_{bid}",
-                                use_container_width=True
-                            )
-                    except Exception:
-                        pass
+                    data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{bid}?fmt=txt")
+                    if ok:
+                        st.download_button("📥 .txt", data=data,
+                                          file_name=f"blueprint_{bid}.txt",
+                                          mime="text/plain", key=f"dltxt_{bid}",
+                                          use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: EQUIPMENT SCANNER
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "scanner":
-    st.markdown("### 🔬 EQUIPMENT SCANNER")
+    st.markdown("### EQUIPMENT SCANNER")
     st.caption("Upload a photo of any hardware. Gemini Vision identifies every component.")
 
     col_left, col_right = st.columns([1, 1])
@@ -947,75 +802,72 @@ elif st.session_state.active_tab == "scanner":
                 mime = uploaded.type or "image/jpeg"
                 data_url = f"data:{mime};base64,{b64}"
 
-                try:
-                    with st.spinner("Running computer vision analysis..."):
-                        resp = httpx.post(
-                            f"{WORKSHOP_URL}/scan/base64",
-                            json={
-                                "image_base64": data_url,
-                                "user_email":   st.session_state.user_email,
-                                "context":      context or "general hardware scan",
-                            },
-                            headers=_h(), timeout=15.0
-                        )
-                        if resp.status_code == 200:
-                            st.session_state.scan_task = resp.json().get("task_id")
-                            st.rerun()
-                        else:
-                            st.error(f"Scanner refused: {resp.text}")
-                except Exception as e:
-                    st.error(f"Scanner offline: {e}")
+                with st.spinner("Running computer vision analysis..."):
+                    result = api_post(f"{WORKSHOP_URL}/scan/base64", {
+                        "image_base64": data_url,
+                        "user_email":   st.session_state.user_email,
+                        "context":      context or "general hardware scan",
+                    }, timeout=15.0)
+
+                    if isinstance(result, APIError):
+                        st.error(f"Scanner error: {result.detail}")
+                    else:
+                        st.session_state.scan_task = result.get("task_id")
+                        st.session_state.scan_attempts = 0
+                        st.rerun()
 
     with col_right:
         if st.session_state.scan_task:
             task_id = st.session_state.scan_task
-            try:
-                sr = httpx.get(
-                    f"{WORKSHOP_URL}/task/status/{task_id}",
-                    headers=_h(), timeout=10.0
-                ).json()
+            max_scan_attempts = 20  # 20 x 3s = 60s max wait
 
-                if sr.get("status") == "complete":
-                    result = sr.get("result", {}).get("scan_result", {})
-                    ident  = result.get("identification", {})
-                    comps  = result.get("components", [])
+            if st.session_state.scan_attempts >= max_scan_attempts:
+                st.error("Scan timed out. Try again or use a different image.")
+                st.session_state.scan_task = None
+                st.session_state.scan_attempts = 0
+            else:
+                # Show progress
+                progress = st.session_state.scan_attempts / max_scan_attempts
+                remaining = max_scan_attempts - st.session_state.scan_attempts
+                st.progress(progress, text=f"Analyzing... ({remaining * 3}s remaining)")
 
+                result = api_get(f"{WORKSHOP_URL}/task/status/{task_id}")
+
+                if isinstance(result, APIError):
+                    st.info("Waiting for scan result...")
+                    st.session_state.scan_attempts += 1
+                    time.sleep(3)
+                    st.rerun()
+                elif result.get("status") == "complete":
+                    scan_data = result.get("result", {}).get("scan_result", {})
+                    ident = scan_data.get("identification", {})
+                    comps = scan_data.get("components", [])
                     st.success(f"**{ident.get('equipment_name', 'Unknown Equipment')}**")
                     st.markdown("#### Identified Components")
                     for c in comps:
-                        st.markdown(f"- **{c.get('name', '?')}** × {c.get('quantity', '?')}")
+                        st.markdown(f"- **{c.get('name', '?')}** x {c.get('quantity', '?')}")
                     st.session_state.scan_task = None
-
-                elif sr.get("status") == "failed":
+                    st.session_state.scan_attempts = 0
+                elif result.get("status") == "failed":
                     st.error("Scan failed. Try another image.")
                     st.session_state.scan_task = None
-
+                    st.session_state.scan_attempts = 0
                 else:
                     st.info("Gemini Vision analyzing... please wait.")
+                    st.session_state.scan_attempts += 1
                     time.sleep(3)
                     st.rerun()
-
-            except Exception:
-                st.info("Waiting for scan result...")
-                time.sleep(3)
-                st.rerun()
 
     # Scan history
     st.markdown("---")
     st.markdown("#### Past Scans")
-    try:
-        scans = httpx.get(
-            f"{EXPORT_URL}/export/scan/{st.session_state.user_email}",
-            headers=_h(), timeout=8.0
-        ).json().get("scans", [])
-        for s in scans[:10]:
-            with st.expander(
-                f"🔩 {s.get('equipment_name', 'Unknown')} — {str(s.get('created_at', ''))[:10]}"
-            ):
-                result = s.get("scan_result", {})
-                for comp in result.get("components", []):
-                    st.markdown(f"- {comp.get('name', '?')} × {comp.get('quantity', '?')}")
-    except Exception:
+    scans = api_get(f"{EXPORT_URL}/export/scan/{st.session_state.user_email}", timeout=8.0)
+    if not isinstance(scans, APIError):
+        for s in scans.get("scans", [])[:10]:
+            with st.expander(f"🔩 {s.get('equipment_name','Unknown')} — {str(s.get('created_at',''))[:10]}"):
+                for comp in s.get("scan_result", {}).get("components", []):
+                    st.markdown(f"- {comp.get('name','?')} x {comp.get('quantity','?')}")
+    else:
         st.caption("Scan history unavailable.")
 
 
@@ -1023,18 +875,14 @@ elif st.session_state.active_tab == "scanner":
 # TAB: CONCEPTION DNA
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "conception":
-    st.markdown("### 🧠 CONCEPTION DNA — LEARNING CORE")
-    st.caption(
-        "Conception learns from every blueprint forged. "
-        "The more you build, the smarter he gets."
-    )
+    st.markdown("### CONCEPTION DNA — LEARNING CORE")
+    st.caption("Conception learns from every blueprint forged. The more you build, the smarter he gets.")
 
-    try:
-        stats = httpx.get(
-            f"{EXPORT_URL}/export/stats/{st.session_state.user_email}",
-            headers=_h(), timeout=8.0
-        ).json()
+    stats = api_get(f"{EXPORT_URL}/export/stats/{st.session_state.user_email}", timeout=8.0)
 
+    if isinstance(stats, APIError):
+        st.error(f"Could not load Conception data: {stats.detail}")
+    else:
         total  = stats.get("total_builds", 0)
         tokens = stats.get("total_tokens", 0)
         ready  = stats.get("conception_ready", 0)
@@ -1046,16 +894,11 @@ elif st.session_state.active_tab == "conception":
         c3.metric("Conception Ready",    f"{pct}%")
 
         st.markdown("---")
-
-        # DNA progress bar
         st.markdown("#### CONCEPTION KNOWLEDGE INDEX")
         knowledge_pct = min(total / 500, 1.0)
-        st.progress(
-            knowledge_pct,
-            text=f"{total} / 500 blueprints — {knowledge_pct*100:.1f}% knowledge saturation"
-        )
+        st.progress(knowledge_pct,
+                    text=f"{total} / 500 blueprints — {knowledge_pct*100:.1f}% knowledge saturation")
 
-        # Top project types
         st.markdown("#### TOP ENGINEERING DOMAINS LEARNED")
         top = stats.get("top_projects", [])
         if top:
@@ -1071,65 +914,50 @@ elif st.session_state.active_tab == "conception":
         st.markdown("---")
         st.markdown("#### CONCEPTION STATUS")
         if total == 0:
-            st.warning("🔴 Offline — No training data yet.")
+            st.warning("Offline — No training data yet.")
         elif total < 10:
-            st.warning(f"🟡 Initializing — {total} blueprints absorbed. Keep forging.")
+            st.warning(f"Initializing — {total} blueprints absorbed. Keep forging.")
         elif total < 50:
-            st.info(f"🔵 Learning — {total} blueprints in memory.")
+            st.info(f"Learning — {total} blueprints in memory.")
         elif total < 200:
-            st.success(f"🟢 Active — {total} blueprints. Conception is developing.")
+            st.success(f"Active — {total} blueprints. Conception is developing.")
         else:
-            st.success(f"⚡ ADVANCED — {total} blueprints. Conception is growing rapidly.")
+            st.success(f"ADVANCED — {total} blueprints. Conception is growing rapidly.")
 
         st.markdown("---")
         st.markdown("#### NEXT MILESTONE")
         milestones = [10, 50, 100, 200, 500]
         next_m = next((m for m in milestones if m > total), 500)
-        needed = next_m - total
-        st.info(f"**{needed} more blueprints** until the next evolution milestone ({next_m} total).")
-
-    except Exception as e:
-        st.error(f"Could not load Conception data: {e}")
+        st.info(f"**{next_m - total} more blueprints** until the next evolution milestone ({next_m} total).")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: ARENA CHAT
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "chat":
-    st.markdown("### 💬 FOUNDRY ARENA CHAT")
+    st.markdown("### FOUNDRY ARENA CHAT")
     st.caption("Live global channel. All operators. All tiers.")
 
     with st.form("chat_form", clear_on_submit=True):
         msg_text = st.text_input("Message", placeholder="Speak, operator...")
         sent = st.form_submit_button("TRANSMIT", use_container_width=True)
         if sent and msg_text.strip():
-            try:
-                httpx.post(
-                    f"{AI_URL}/arena/chat/send",
-                    json={
-                        "user_name": st.session_state.user_name or "Anonymous",
-                        "tier":      st.session_state.tier,
-                        "message":   msg_text.strip(),
-                    },
-                    headers=_h(), timeout=5.0
-                )
-            except Exception:
-                pass
+            api_post(f"{AI_URL}/arena/chat/send", {
+                "user_name": st.session_state.user_name or "Anonymous",
+                "tier":      st.session_state.tier,
+                "message":   msg_text.strip(),
+            }, timeout=5.0)
 
-    try:
-        messages = httpx.get(
-            f"{AI_URL}/arena/chat/recent",
-            headers=_h(), timeout=5.0
-        ).json()
-
-        tier_badge = {"master": "🥇", "pro": "🟠", "starter": "⚪"}
+    messages = api_get(f"{AI_URL}/arena/chat/recent", timeout=5.0)
+    if not isinstance(messages, APIError):
+        tier_badge = {"master": "🥇", "pro": "🟠", "starter": "⚪", "trial": "🟢"}
         for m in messages:
             badge = tier_badge.get(m.get("tier", ""), "⚪")
             st.markdown(
                 f"`{m.get('time', '')}` {badge} **{m.get('user', '?')}** — {m.get('text', '')}",
                 unsafe_allow_html=False
             )
-    except Exception:
+    else:
         st.caption("Chat unavailable.")
 
     if st.button("🔄 REFRESH", use_container_width=True):
@@ -1139,3 +967,22 @@ elif st.session_state.active_tab == "chat":
 # ── FOOTER ─────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.caption("AoC3P0 Systems | The Builder Foundry | Conception DNA Architecture")
+
+# ── GLOBAL ERROR DISPLAY ──────────────────────────────────────────────────────
+# If any unhandled exception occurred during rendering, Streamlit shows its own
+# error widget. This is a safety net for the developer — in production, each
+# section already handles errors via isinstance(result, APIError) checks.
+# To see raw exceptions during development, set: SHOW_DEBUG=1 in env vars.
+if os.getenv("SHOW_DEBUG"):
+    st.markdown("---")
+    with st.expander("🔧 DEBUG INFO"):
+        st.json({
+            "session_state": {k: str(v)[:100] for k, v in st.session_state.items()},
+            "services": {
+                "auth": AUTH_URL,
+                "ai": AI_URL,
+                "workshop": WORKSHOP_URL,
+                "export": EXPORT_URL,
+                "billing": BILLING_URL,
+            },
+        })
