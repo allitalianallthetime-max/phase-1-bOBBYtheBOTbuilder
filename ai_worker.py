@@ -1,1033 +1,958 @@
 """
-APP.PY — BUILDER FOUNDRY STREAMLIT FRONTEND
-=============================================
-Public landing page -> License auth -> Forge -> Vault -> Scanner -> DNA -> Chat
+AI WORKER v3 — CELERY TASK RUNNER
+====================================
+Pipeline: GROK-3 (JSON) -> CLAUDE (markdown) -> (GEMINI + SCHEMATIC parallel) -> Save
 
-Refactored: all HTTP calls use app_helpers (api_get, api_post, api_get_raw).
-Repeated patterns extracted into functions. Error handling is consistent.
+v3 improvements:
+  - Grok returns structured JSON (components, specs, feasibility, creative ideas)
+  - Retry with exponential backoff on all LLM calls (handles 429s, transient failures)
+  - Token budget estimation before each call (auto-truncate if too high)
+  - Structured JSON logging for observability
+  - Heartbeat updates every 10s during long agent calls
+  - asyncio.to_thread for all sync SDK calls (Claude, schematic)
+  - Gemini + Schematic run in parallel (saves 15-30s)
+  - Grok failure detection with Claude self-analysis fallback
+  - Schematic retry with shorter excerpt on failure
 """
 
-import streamlit as st
 import os
-import base64
-import time
-import html
-from dotenv import load_dotenv
-from app_helpers import api_get, api_post, api_get_raw, ping_service, APIError
+import json
+import logging
+import asyncio
+import time as _time
+from typing import Optional
+
+import httpx
+import psycopg2.pool
+from celery import Celery
+from celery.signals import worker_process_init
+from contextlib import contextmanager
+from anthropic import Anthropic
 
 try:
-    from PIL import Image
-    import io as _io
-    _PIL_AVAILABLE = True
+    import google.generativeai as genai
+    _GENAI_AVAILABLE = True
 except ImportError:
-    _PIL_AVAILABLE = False
+    _GENAI_AVAILABLE = False
 
-try:
-    from builder_styles import BUILDER_CSS, FORGE_HEADER_HTML
-except ImportError:
-    BUILDER_CSS = ""
-    FORGE_HEADER_HTML = "<h1 style='color:#FF4500; text-align:center;'>THE BUILDER FOUNDRY</h1>"
+# ── LOGGING ───────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("ai_worker")
 
-# ── CONFIGURATION ──────────────────────────────────────────────────────────────
-load_dotenv()
-st.set_page_config(
-    page_title="AoC3P0 | THE BUILDER FOUNDRY",
-    page_icon="⚙️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+
+def _log_event(event: str, **kwargs):
+    """Structured JSON log line for easy parsing."""
+    kwargs["event"] = event
+    kwargs["ts"] = _time.time()
+    log.info(json.dumps(kwargs, default=str))
+
+
+# ── CELERY + DB ───────────────────────────────────────────────────────────────
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+celery_app = Celery("ai_worker", broker=REDIS_URL, backend=REDIS_URL)
+celery = celery_app  # Alias — Celery's -A flag looks for 'celery' by default
+celery_app.conf.update(
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    result_expires=3600,
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
 )
 
-AUTH_URL       = os.getenv("AUTH_SERVICE_URL",      "http://localhost:8001")
-AI_URL         = os.getenv("AI_SERVICE_URL",        "http://localhost:8002")
-WORKSHOP_URL   = os.getenv("WORKSHOP_SERVICE_URL",  "http://localhost:8003")
-EXPORT_URL     = os.getenv("EXPORT_SERVICE_URL",    "http://localhost:8004")
-BILLING_URL    = os.getenv("BILLING_SERVICE_URL",   "http://localhost:8006")
-STRIPE_STARTER = os.getenv("STRIPE_URL_STARTER",    "#")
-STRIPE_PRO     = os.getenv("STRIPE_URL_PRO",        "#")
-STRIPE_MASTER  = os.getenv("STRIPE_URL_MASTER",     "#")
+_db_url = os.getenv("DATABASE_URL")
+if not _db_url:
+    raise RuntimeError("DATABASE_URL is not set.")
 
-# ── APPLY THEME ────────────────────────────────────────────────────────────────
-if BUILDER_CSS:
-    st.markdown(BUILDER_CSS, unsafe_allow_html=True)
+# Pool created AFTER Celery forks — prevents shared-socket crashes
+pool = None
 
-# ── SESSION STATE ──────────────────────────────────────────────────────────────
-_defaults = {
-    "logged_in": False, "user_email": "", "user_name": "", "tier": "",
-    "jwt_token": "", "active_task": None, "vault_data": None,
-    "active_tab": "forge", "scan_task": None, "scan_attempts": 0,
-    "forge_attempts": 0, "landing_warmed": False, "services_warmed": False,
+
+@worker_process_init.connect
+def _init_worker_db(**kwargs):
+    """Create a fresh DB pool in each Celery child process."""
+    global pool
+    pool = psycopg2.pool.ThreadedConnectionPool(1, 5, _db_url)
+    log.info("DB pool created in worker process (pid=%d)", os.getpid())
+
+
+@contextmanager
+def get_db():
+    if pool is None:
+        raise RuntimeError("Database pool not initialized — worker_process_init hasn't fired.")
+    conn = pool.getconn()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
+
+
+# ── ENVIRONMENT ───────────────────────────────────────────────────────────────
+CONCEPTION_URL = os.getenv("CONCEPTION_SERVICE_URL", "http://builder-conception:10000")
+INT_KEY        = os.getenv("INTERNAL_API_KEY", "")
+ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+GEMINI_KEY     = os.getenv("GEMINI_API_KEY", "")
+GROK_KEY       = os.getenv("GROK_API_KEY", "")
+GMAIL_ADDRESS  = os.getenv("GMAIL_ADDRESS", "")
+GMAIL_APP_PW   = os.getenv("GMAIL_APP_PW", "")
+
+_anthropic_client: Optional[Anthropic] = None
+
+
+def _get_anthropic() -> Anthropic:
+    global _anthropic_client
+    if _anthropic_client is None and ANTHROPIC_KEY:
+        _anthropic_client = Anthropic(api_key=ANTHROPIC_KEY)
+    return _anthropic_client
+
+
+if _GENAI_AVAILABLE and GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+
+
+def _h() -> dict:
+    return {"x-internal-key": INT_KEY}
+
+
+# ── COST ESTIMATION ($ per 1K tokens, approximate) ───────────────────────────
+# Update these when pricing changes. Used for logging only, not billing.
+_COST_PER_1K = {
+    "grok_input":     0.003,   # Grok-3
+    "grok_output":    0.015,
+    "claude_input":   0.003,   # Claude Sonnet
+    "claude_output":  0.015,
+    "gemini_input":   0.0001,  # Gemini 2.5 Flash
+    "gemini_output":  0.0004,
 }
-for k, v in _defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
 
 
-# ── CACHED DOWNLOADS (prevents self-DDoS on vault page reruns) ────────────────
-@st.cache_data(show_spinner=False, ttl=3600)
-def _cached_download(url: str):
-    """Cache file downloads so vault page reruns don't spam the API."""
-    return api_get_raw(url)
+def _estimate_cost(agent: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate cost in USD for an agent call."""
+    in_cost = (input_tokens / 1000) * _COST_PER_1K.get(f"{agent}_input", 0)
+    out_cost = (output_tokens / 1000) * _COST_PER_1K.get(f"{agent}_output", 0)
+    return round(in_cost + out_cost, 4)
 
 
-# ── REUSABLE UI HELPERS ───────────────────────────────────────────────────────
+# ── EMAIL DELIVERY ────────────────────────────────────────────────────────────
 
-def _download_buttons(build_id: str, key_suffix: str = ""):
-    """Render .md and .txt download buttons for a build."""
-    col1, col2 = st.columns(2)
-    with col1:
-        data, ok = _cached_download(f"{EXPORT_URL}/export/download/{build_id}?fmt=md")
-        if ok:
-            st.download_button(
-                "📥 DOWNLOAD (.md)", data=data,
-                file_name=f"blueprint_{build_id}.md", mime="text/markdown",
-                key=f"dlmd_{build_id}{key_suffix}", use_container_width=True
+def _send_blueprint_email(user_email: str, project_type: str,
+                           blueprint: str, build_id, notes: dict) -> bool:
+    """Email the completed blueprint to the user. Non-critical — never crashes the pipeline."""
+    if not GMAIL_ADDRESS or not GMAIL_APP_PW or not user_email:
+        return False
+    if user_email in ("admin", "anonymous"):
+        return False
+
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    difficulty = notes.get("difficulty_rating", "Unknown")
+    build_time = notes.get("estimated_build_time", "Unknown")
+    feasibility = "See blueprint"
+
+    # Extract feasibility from blueprint text
+    for line in blueprint.split("\n"):
+        if "FEASIBILITY RATING:" in line.upper() or "FEASIBILITY:" in line.upper():
+            feasibility = line.strip()[:80]
+            break
+
+    html_body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#0A0E17;color:#E2E8F0;padding:30px;border-radius:12px;">
+        <div style="text-align:center;margin-bottom:20px;">
+            <h1 style="color:#FF4500;font-size:28px;margin:0;">YOUR BLUEPRINT IS READY</h1>
+            <p style="color:#94A3B8;font-size:14px;">The Builder Foundry — AoC3P0 Systems</p>
+        </div>
+
+        <div style="background:#1E293B;padding:20px;border-radius:8px;border-left:4px solid #FF4500;margin-bottom:20px;">
+            <div style="color:#F97316;font-size:12px;letter-spacing:2px;">PROJECT</div>
+            <div style="color:white;font-size:20px;font-weight:bold;margin-top:4px;">{project_type}</div>
+        </div>
+
+        <div style="display:flex;gap:12px;margin-bottom:20px;">
+            <div style="background:#1E293B;padding:12px;border-radius:6px;flex:1;text-align:center;">
+                <div style="color:#94A3B8;font-size:10px;">DIFFICULTY</div>
+                <div style="color:white;font-weight:bold;">{difficulty}</div>
+            </div>
+            <div style="background:#1E293B;padding:12px;border-radius:6px;flex:1;text-align:center;">
+                <div style="color:#94A3B8;font-size:10px;">BUILD TIME</div>
+                <div style="color:white;font-weight:bold;">{build_time}</div>
+            </div>
+        </div>
+
+        <div style="background:#1E293B;padding:20px;border-radius:8px;margin-bottom:20px;">
+            <div style="color:#FF4500;font-size:12px;letter-spacing:2px;margin-bottom:12px;">BLUEPRINT PREVIEW</div>
+            <pre style="color:#CBD5E1;font-size:12px;line-height:1.6;white-space:pre-wrap;font-family:monospace;">{blueprint[:2000]}...</pre>
+        </div>
+
+        <div style="text-align:center;margin-bottom:20px;">
+            <a href="https://bobtherobotbuilder.com" style="display:inline-block;background:#FF4500;color:white;padding:14px 40px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;">VIEW FULL BLUEPRINT</a>
+        </div>
+
+        <div style="color:#64748B;font-size:11px;text-align:center;border-top:1px solid #2A3A52;padding-top:16px;">
+            {feasibility}<br><br>
+            Log in with your license key to see the full blueprint, download files, and forge more builds.<br><br>
+            <strong style="color:#FF4500;">Want more builds?</strong> Upgrade at bobtherobotbuilder.com<br><br>
+            AoC3P0 Systems | The Builder Foundry | Conception DNA Architecture
+        </div>
+    </div>
+    """
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Your Blueprint is Ready: {project_type}"
+        msg["From"]    = f"Builder Foundry <{GMAIL_ADDRESS}>"
+        msg["To"]      = user_email
+        msg.attach(MIMEText(f"Your blueprint for {project_type} is ready. Log in at bobtherobotbuilder.com to view it.", "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PW)
+            server.send_message(msg)
+
+        _log_event("blueprint_email_sent", user=user_email, project=project_type[:30])
+        return True
+    except Exception as e:
+        _log_event("blueprint_email_failed", user=user_email, error=str(e)[:100])
+        return False
+
+
+# ── UTILITIES ─────────────────────────────────────────────────────────────────
+
+def _truncate(text: str, max_chars: int = 5000) -> str:
+    """Truncate at paragraph/sentence boundary."""
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    for sep in ["\n\n", ".\n", ". ", "\n"]:
+        idx = cut.rfind(sep)
+        if idx > max_chars * 0.7:
+            return cut[:idx + 1]
+    return cut
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return len(text) // 4
+
+
+def _token_budget_check(texts: list, max_tokens: int, label: str) -> list:
+    """
+    Check if combined input texts would exceed token budget.
+    If too high, truncate the longest text proportionally.
+    Returns the (possibly truncated) list.
+    """
+    total = sum(_estimate_tokens(t) for t in texts)
+    if total <= max_tokens:
+        return texts
+
+    ratio = max_tokens / max(total, 1)
+    _log_event("token_budget_exceeded", label=label,
+               estimated=total, budget=max_tokens, ratio=round(ratio, 2))
+
+    # Truncate each text proportionally
+    result = []
+    for t in texts:
+        new_len = int(len(t) * ratio * 0.9)  # 10% safety margin
+        result.append(_truncate(t, max_len) if (max_len := new_len) < len(t) else t)
+    return result
+
+
+class _Timer:
+    """Context manager for timing agent execution."""
+    def __init__(self, name: str):
+        self.name = name
+        self.elapsed = 0.0
+    def __enter__(self):
+        self._start = _time.time()
+        return self
+    def __exit__(self, *args):
+        self.elapsed = round(_time.time() - self._start, 1)
+        _log_event("agent_timing", agent=self.name, elapsed_s=self.elapsed)
+
+
+async def _retry_async(coro_fn, *args, max_attempts: int = 3,
+                       base_delay: float = 4.0, label: str = "LLM"):
+    """
+    Retry an async function with exponential backoff.
+    Handles 429s and transient failures without tenacity dependency.
+    """
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await coro_fn(*args)
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            is_retryable = any(k in err_str for k in ["429", "rate", "timeout", "overloaded", "503"])
+            if not is_retryable or attempt == max_attempts:
+                _log_event("retry_exhausted", label=label, attempt=attempt, error=str(e)[:200])
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            _log_event("retry_backoff", label=label, attempt=attempt, delay_s=delay, error=str(e)[:100])
+            await asyncio.sleep(delay)
+    raise last_err
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONCEPTION MEMORY HOOKS
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _recall_conception_memory(user_email: str, junk_desc: str,
+                                    project_type: str) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{CONCEPTION_URL}/conception/recall",
+                json={"user_email": user_email, "context": f"{project_type}: {junk_desc[:500]}",
+                       "inventory": junk_desc[:500], "project_type": project_type},
+                headers=_h(),
             )
-    with col2:
-        data, ok = _cached_download(f"{EXPORT_URL}/export/download/{build_id}?fmt=txt")
-        if ok:
-            st.download_button(
-                "📥 DOWNLOAD (.txt)", data=data,
-                file_name=f"blueprint_{build_id}.txt", mime="text/plain",
-                key=f"dltxt_{build_id}{key_suffix}", use_container_width=True
+        if resp.status_code == 200:
+            ctx = resp.json().get("context_string") or resp.json().get("context", "")
+            return ctx
+    except Exception as e:
+        log.warning("Conception recall skipped: %s", e)
+    return ""
+
+
+async def _absorb_into_conception(user_email: str, junk_desc: str,
+                                   project_type: str, blueprint: str,
+                                   grok_notes: str, claude_notes: str,
+                                   build_id: int, tokens_used: int) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{CONCEPTION_URL}/conception/absorb",
+                json={"build_id": build_id, "user_email": user_email,
+                       "junk_desc": junk_desc[:2000], "project_type": project_type,
+                       "blueprint": blueprint[:5000], "grok_notes": grok_notes[:2000],
+                       "claude_notes": claude_notes[:1000], "tokens_used": tokens_used},
+                headers=_h(),
             )
+        if resp.status_code == 200:
+            data = resp.json()
+            _log_event("conception_absorb", build_id=build_id,
+                       domain=data.get("domain", "?"), patterns=data.get("patterns_extracted", 0))
+    except Exception as e:
+        log.warning("Conception absorb failed: %s", e)
 
 
-def _show_schematic(schematic: str, build_id: str):
-    """Render SVG schematic as base64 image if valid."""
-    if not schematic or "<svg" not in schematic or "</svg>" not in schematic:
-        return
-    svg_start = schematic.find("<svg")
-    svg_end = schematic.rfind("</svg>") + 6
-    clean_svg = schematic[svg_start:svg_end]
-    svg_b64 = base64.b64encode(clean_svg.encode("utf-8")).decode("utf-8")
+# ══════════════════════════════════════════════════════════════════════════════
+# GROK FAILURE DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
 
-    st.markdown("#### 📐 TECHNICAL SCHEMATIC")
-    st.markdown(
-        f'<div style="background:white; padding:16px; border-radius:8px; '
-        f'border:1px solid #334155; overflow-x:auto; text-align:center;">'
-        f'<img src="data:image/svg+xml;base64,{svg_b64}" '
-        f'style="max-width:100%; height:auto;" /></div>',
-        unsafe_allow_html=True
+def _grok_failed(analysis) -> bool:
+    """Detect if Grok returned garbage. Works for both JSON dict and string."""
+    if isinstance(analysis, dict):
+        return len(analysis.get("components", [])) == 0
+    if isinstance(analysis, str):
+        if len(analysis) < 50:
+            return True
+        markers = ["offline", "unavailable", "error", "timed out", "unexpected"]
+        return any(m in analysis.lower() for m in markers)
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AGENT 1: GROK-3 — STRUCTURED JSON OUTPUT
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _run_grok_inner(junk_desc: str, project_type: str,
+                          detail_level: str, conception_context: str) -> dict:
+    if not GROK_KEY:
+        return {"analysis": {"components": [], "feasibility_score": 0,
+                "analysis_summary": "Grok offline."}, "tokens": 0}
+
+    timeouts = {"Standard": 40.0, "Industrial": 60.0, "Experimental": 80.0}
+    max_toks = {"Standard": 2000, "Industrial": 3000, "Experimental": 4000}
+    detail_instructions = {
+        "Standard": "Identify major harvestable components from each item.",
+        "Industrial": (
+            "For each component: specify exact voltages, current ratings, "
+            "torque values, dimensions, weight, material grade. "
+            "Calculate mechanical advantage of gear/belt systems."
+        ),
+        "Experimental": (
+            "Maximum depth. Exact electrical specs, mechanical specs, thermal specs, "
+            "dimensional specs. Identify hidden value: capacitors, rare earth magnets, "
+            "precision surfaces, high-quality bearings. Estimate remaining life span."
+        ),
+    }
+
+    system = (
+        f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
+        f"RULES:\n"
+        f"- PROJECT GOAL = what the user wants to BUILD (they don't have it yet)\n"
+        f"- INVENTORY = physical items the user ALREADY OWNS\n"
+        f"- Analyze each inventory item for harvestable components\n"
+        f"- Mark specs as [KNOWN] or [EST]\n\n"
+        f"CREATIVE ENGINEERING: suggest UNEXPECTED uses for each component. "
+        f"Think about what makes each item UNIQUE.\n\n"
+        f"Detail level: {detail_level}. {detail_instructions.get(detail_level, '')}\n\n"
+        f"Return ONLY valid JSON with this exact structure:\n"
+        f'{{\n'
+        f'  "components": [\n'
+        f'    {{\n'
+        f'      "item_source": "name of inventory item",\n'
+        f'      "harvested_parts": [\n'
+        f'        {{\n'
+        f'          "part": "component name",\n'
+        f'          "specs": "voltage, torque, dimensions etc with [KNOWN]/[EST] tags",\n'
+        f'          "project_use": "how this part serves the project goal",\n'
+        f'          "confidence": "high|medium|low"\n'
+        f'        }}\n'
+        f'      ]\n'
+        f'    }}\n'
+        f'  ],\n'
+        f'  "feasibility_score": 0-100,\n'
+        f'  "critical_gaps": ["list of missing essentials"],\n'
+        f'  "honest_limitations": ["what this build cannot do"],\n'
+        f'  "creative_possibilities": [\n'
+        f'    {{"idea": "description", "why_unique": "why this inventory enables it"}}\n'
+        f'  ],\n'
+        f'  "analysis_summary": "2-3 paragraph prose summary"\n'
+        f'}}\n'
+        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
     )
-    st.download_button(
-        "📐 DOWNLOAD SCHEMATIC (.svg)", data=clean_svg,
-        file_name=f"schematic_{build_id or 'draft'}.svg",
-        mime="image/svg+xml", use_container_width=True
-    )
-    st.markdown("---")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LANDING PAGE (not logged in)
-# ══════════════════════════════════════════════════════════════════════════════
-if not st.session_state.logged_in:
-
-    # Silently wake AI service
-    if not st.session_state.landing_warmed:
-        ping_service(f"{AI_URL}/health")
-        st.session_state.landing_warmed = True
-
-    # ── HERO ──
-    st.markdown("""
-        <div style='text-align:center; padding:20px 20px 0;'>
-          <h1 style='color:#FF4500; font-size:42px; margin:0; letter-spacing:2px;'>
-            THE BUILDER FOUNDRY</h1>
-          <p style='color:#94A3B8; font-size:20px; margin-top:8px; max-width:700px;
-                    margin-left:auto; margin-right:auto;'>
-            Turn junk into genius.<br>
-            AI-powered engineering blueprints from the parts you already have.</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    if os.path.exists("hero_banner.jpg"):
-        st.image("hero_banner.jpg", use_container_width=True)
-
-    # ── PROBLEM / SOLUTION ──
-    st.markdown("""
-        <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
-          <div style='display:flex; gap:20px; flex-wrap:wrap; justify-content:center;'>
-            <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
-                        padding:24px; flex:1; min-width:280px; max-width:400px;'>
-              <div style='color:#EF4444; font-size:13px; font-weight:bold;
-                          letter-spacing:2px; margin-bottom:8px;'>THE PROBLEM</div>
-              <div style='color:#E2E8F0; font-size:16px; line-height:1.6;'>
-                You have a garage full of old equipment, scrap parts, and broken machines.
-                Every other AI tool tells you to <span style='color:#EF4444;'>go buy new parts</span>.
-                That defeats the whole point.</div>
-            </div>
-            <div style='background:#1E293B; border:1px solid #FF4500; border-radius:8px;
-                        padding:24px; flex:1; min-width:280px; max-width:400px;'>
-              <div style='color:#FF4500; font-size:13px; font-weight:bold;
-                          letter-spacing:2px; margin-bottom:8px;'>THE SOLUTION</div>
-              <div style='color:#E2E8F0; font-size:16px; line-height:1.6;'>
-                Tell us what you <strong>have</strong> and what you want to <strong>build</strong>.
-                Three AI agents tear apart your inventory, identify every harvestable component,
-                and generate a complete blueprint using
-                <span style='color:#FF4500;'>only your parts</span>.</div>
-            </div>
-          </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── WHAT CAN YOU BUILD? ──
-    st.markdown("""
-        <div style='text-align:center; margin:40px 0 16px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>What Can You Build?</h2>
-          <p style='color:#64748B; font-size:14px;'>Anything. From anything. Here are some ideas.</p>
-        </div>
-        <div style='max-width:900px; margin:0 auto; padding:0 20px;'>
-          <div style='display:flex; gap:12px; flex-wrap:wrap; justify-content:center;'>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #F97316; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#F97316; font-size:13px; font-weight:bold;'>Robots</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Bipeds, quadrupeds, arms</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #3B82F6; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#3B82F6; font-size:13px; font-weight:bold;'>Home Automation</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Pet feeders, garden systems</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #10B981; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#10B981; font-size:13px; font-weight:bold;'>Shop Tools</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Hydraulic press, jigs, rigs</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #A855F7; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#A855F7; font-size:13px; font-weight:bold;'>Vehicles</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Go-karts, e-bikes, trailers</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #EF4444; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#EF4444; font-size:13px; font-weight:bold;'>Energy Systems</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Solar rigs, wind turbines</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #F59E0B; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#F59E0B; font-size:13px; font-weight:bold;'>Farm &amp; Garden</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Irrigation, coops, planters</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #06B6D4; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#06B6D4; font-size:13px; font-weight:bold;'>Furniture</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Desks, shelves, workbenches</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #EC4899; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#EC4899; font-size:13px; font-weight:bold;'>Anything Else</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>If it can be built, we forge it</div>
-            </div>
-          </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── HOW IT WORKS ──
-    st.markdown("""
-        <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>How The Round Table Works</h2>
-          <p style='color:#64748B; font-size:14px;'>Three AI agents collaborate on every blueprint</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    a1, a2, a3 = st.columns(3)
-    with a1:
-        st.markdown("""
-            <div style='background:#1E293B; border-radius:8px; padding:24px;
-                        border-top:3px solid #F97316; text-align:center; min-height:220px;'>
-              <div style='font-size:32px; margin-bottom:8px;'>&#128295;</div>
-              <div style='color:#F97316; font-weight:bold; font-size:16px;'>GROK-3</div>
-              <div style='color:#64748B; font-size:11px; letter-spacing:1px;
-                          margin-bottom:12px;'>JUNKYARD ANALYST</div>
-              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
-                Tears apart every item in your inventory. Identifies motors, frames,
-                wiring, bearings, circuit boards — everything harvestable.</div>
-            </div>
-        """, unsafe_allow_html=True)
-    with a2:
-        st.markdown("""
-            <div style='background:#1E293B; border-radius:8px; padding:24px;
-                        border-top:3px solid #3B82F6; text-align:center; min-height:220px;'>
-              <div style='font-size:32px; margin-bottom:8px;'>&#128208;</div>
-              <div style='color:#3B82F6; font-weight:bold; font-size:16px;'>CLAUDE SONNET</div>
-              <div style='color:#64748B; font-size:11px; letter-spacing:1px;
-                          margin-bottom:12px;'>BLUEPRINT ENGINEER</div>
-              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
-                Writes the full engineering blueprint using only the parts Grok identified.
-                Every material traces back to your inventory. Plus a technical schematic.</div>
-            </div>
-        """, unsafe_allow_html=True)
-    with a3:
-        st.markdown("""
-            <div style='background:#1E293B; border-radius:8px; padding:24px;
-                        border-top:3px solid #10B981; text-align:center; min-height:220px;'>
-              <div style='font-size:32px; margin-bottom:8px;'>&#128300;</div>
-              <div style='color:#10B981; font-weight:bold; font-size:16px;'>GEMINI FLASH</div>
-              <div style='color:#64748B; font-size:11px; letter-spacing:1px;
-                          margin-bottom:12px;'>QUALITY INSPECTOR</div>
-              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
-                Reviews the blueprint for safety, rates difficulty, estimates build time,
-                and scores how well it actually used your inventory.</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    # ── EXAMPLE OUTPUT ──
-    st.markdown("""
-        <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>What You Get</h2>
-          <p style='color:#64748B; font-size:14px;'>Real output from a real forge</p>
-        </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-        <div style='max-width:900px; margin:0 auto;'>
-          <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
-                      padding:24px; margin-bottom:16px;'>
-            <div style='color:#64748B; font-size:11px; letter-spacing:2px;
-                        margin-bottom:4px;'>EXAMPLE INPUT</div>
-            <div style='color:#F97316; font-size:14px; font-weight:bold;
-                        margin-bottom:4px;'>PROJECT: Automated Cat Litter Robot</div>
-            <div style='color:#94A3B8; font-size:13px;'>
-              INVENTORY: Old treadmill with auto incline + Refurbished Dell OptiPlex computer</div>
-          </div>
-          <div style='background:#1E293B; border:1px solid #FF4500; border-radius:8px;
-                      padding:24px;'>
-            <div style='color:#FF4500; font-size:11px; letter-spacing:2px;
-                        margin-bottom:12px;'>EXAMPLE OUTPUT</div>
-            <div style='color:#E2E8F0; font-size:14px; line-height:1.7;'>
-              <strong style='color:#3B82F6;'>&#9654; Drive Motor:</strong>
-              Harvested from treadmill (1-2HP DC motor with variable speed control)<br>
-              <strong style='color:#3B82F6;'>&#9654; Conveyor Belt:</strong>
-              Repurposed treadmill wide belt, modified with sifting perforations<br>
-              <strong style='color:#3B82F6;'>&#9654; Structural Frame:</strong>
-              Cut and welded sections from treadmill steel frame<br>
-              <strong style='color:#3B82F6;'>&#9654; Tilting Mechanism:</strong>
-              Linear actuator harvested from treadmill auto-incline system<br>
-              <strong style='color:#3B82F6;'>&#9654; Control Computer:</strong>
-              Dell OptiPlex i5 programmed for cycle timing and automation<br>
-              <strong style='color:#3B82F6;'>&#9654; Ventilation:</strong>
-              Computer case fans repurposed for odor management<br>
-              <strong style='color:#3B82F6;'>&#9654; Electronics Enclosure:</strong>
-              Modified Dell computer chassis<br>
-            </div>
-            <div style='color:#10B981; font-size:13px; margin-top:12px; padding-top:12px;
-                        border-top:1px solid #334155;'>
-              &#10003; Technical SVG schematic included &nbsp;&nbsp;
-              &#10003; Full assembly sequence &nbsp;&nbsp;
-              &#10003; Safety notes &nbsp;&nbsp;
-              &#10003; Testing procedures &nbsp;&nbsp;
-              &#10003; Honest assessment &amp; gap-filler shopping list</div>
-            <div style='color:#F59E0B; font-size:12px; margin-top:8px;'>
-              Estimated commercial equivalent: $2,500 - $4,000</div>
-          </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── FEATURES ──
-    st.markdown("""
-        <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
-          <div style='display:flex; gap:16px; flex-wrap:wrap; justify-content:center;'>
-            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
-                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
-              <div style='font-size:24px;'>&#128208;</div>
-              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
-                Technical Schematics</div>
-              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
-                Auto-generated SVG engineering drawings with every blueprint</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
-                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
-              <div style='font-size:24px;'>&#128248;</div>
-              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
-                Equipment Scanner</div>
-              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
-                Upload a photo. Gemini Vision identifies every component automatically.</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
-                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
-              <div style='font-size:24px;'>&#129504;</div>
-              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
-                Conception DNA</div>
-              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
-                Every blueprint trains our AI. The more you build, the smarter it gets.</div>
-            </div>
-          </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── PRICING ──
-    st.markdown("""
-        <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>Choose Your Clearance Level</h2>
-          <p style='color:#64748B; font-size:14px;'>Every tier includes full Round Table access</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:1px solid #94A3B8; text-align:center;'>
-              <div style='color:#94A3B8; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>STARTER</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $25<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                25 blueprint builds per month<br>Full Round Table access<br>
-                Technical schematics<br>Equipment scanner<br>Blueprint downloads</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.link_button("⚡ GET STARTER", STRIPE_STARTER, use_container_width=True)
-    with t2:
-        st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:2px solid #FF4500; text-align:center;
-                        box-shadow:0 0 20px rgba(255,69,0,0.15);'>
-              <div style='color:#FF4500; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>PRO &#9733; MOST POPULAR</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $100<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                100 blueprint builds per month<br>Everything in Starter<br>
-                Priority processing<br>Conception DNA insights<br>Best value per build</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.link_button("🔥 GET PRO", STRIPE_PRO, use_container_width=True)
-    with t3:
-        st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:1px solid #FFD700; text-align:center;'>
-              <div style='color:#FFD700; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>MASTER</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $999<span style='font-size:16px; color:#94A3B8;'>/yr</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                Unlimited builds forever<br>Everything in Pro<br>
-                Schools &amp; makerspaces<br>Direct Conception access<br>Annual lock-in savings</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.link_button("👑 GET MASTER", STRIPE_MASTER, use_container_width=True)
-
-    # ── THE STORY ──
-    st.markdown("""
-        <div style='max-width:700px; margin:40px auto; text-align:center; padding:0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:24px; margin-bottom:12px;'>Built From Scraps. Literally.</h2>
-          <p style='color:#94A3B8; font-size:14px; line-height:1.8;'>
-            The Builder Foundry was created by a self-taught developer who pieces together
-            computers from parts and builds things from scrap. No CS degree. No funding.
-            Just a passion for engineering and a refusal to stop learning.<br><br>
-            This is Phase 1 of <strong style='color:#FF4500;'>Conception</strong> —
-            an advanced AI being built to learn from every blueprint, protect families,
-            run businesses, and eventually walk in a physical body.<br><br>
-            Every blueprint you forge makes Conception smarter.</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── FREE TRIAL ──
-    st.markdown("---")
-    st.markdown("""
-        <div style='text-align:center; margin:20px 0 12px;'>
-          <h2 style='color:#10B981; font-size:28px;'>Try 1 Free Build</h2>
-          <p style='color:#64748B; font-size:14px;'>No credit card. Just your email. See what the Foundry can do.</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    t1, t2, t3 = st.columns([1, 1.2, 1])
-    with t2:
-        trial_email = st.text_input("Email Address", placeholder="you@example.com",
-                                    key="trial_email")
-        email_optin = st.checkbox(
-            "I agree to receive updates, tips, and new feature announcements from The Builder Foundry.",
-            value=True, key="trial_optin"
-        )
-        st.markdown(
-            "<div style='color:#475569; font-size:10px; margin-top:-8px; margin-bottom:8px;'>"
-            "We respect your inbox. Unsubscribe anytime.</div>",
-            unsafe_allow_html=True
-        )
-        if st.button("🚀 GET MY FREE BUILD", use_container_width=True):
-            if not trial_email or "@" not in trial_email:
-                st.warning("Enter a valid email address.")
-            elif not email_optin:
-                st.warning("Please agree to receive updates to activate your free trial.")
-            else:
-                with st.spinner("Creating your trial license..."):
-                    result = api_post(
-                        f"{AUTH_URL}/auth/trial",
-                        {"email": trial_email.strip().lower(), "email_optin": True}
-                    )
-                    if isinstance(result, APIError):
-                        if result.status == 409:
-                            st.warning(result.detail)
-                        elif result.status == 429:
-                            st.warning("Too many trial requests. Please wait a few minutes.")
-                        else:
-                            st.error(result.detail)
-                    else:
-                        trial_key = result.get("key", "")
-                        st.success(f"Your license key: **{trial_key}**")
-                        st.info("Copy this key and use it to log in below. You have 1 free build and 7 days!")
-
-    # ── LOGIN ──
-    st.markdown("---")
-    st.markdown("""
-        <div style='text-align:center; margin-bottom:12px;'>
-          <h3 style='color:#FF4500;'>Already Have a License?</h3>
-        </div>
-    """, unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c2:
-        license_key = st.text_input("License Key", type="password",
-                                    placeholder="BOB-XXXX-XXXX-XXXX")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            if st.button("AUTHORIZE", use_container_width=True):
-                if not license_key:
-                    st.warning("Enter a license key.")
-                else:
-                    with st.spinner("Verifying credentials..."):
-                        result = api_post(
-                            f"{AUTH_URL}/verify-license",
-                            {"license_key": license_key}
-                        )
-                        if isinstance(result, APIError):
-                            if result.status == 429:
-                                st.warning("Too many login attempts. Wait a few minutes.")
-                            else:
-                                st.error(result.detail)
-                        else:
-                            st.session_state.logged_in  = True
-                            st.session_state.user_email = result["email"]
-                            st.session_state.user_name  = result["name"]
-                            st.session_state.tier       = result["tier"]
-                            st.session_state.jwt_token  = result["token"]
-                            st.rerun()
-        with col_b:
-            st.link_button("GET A LICENSE", STRIPE_STARTER, use_container_width=True)
-
-    # ── FOOTER ──
-    st.markdown("""
-        <div style='text-align:center; padding:40px 0 20px; color:#475569; font-size:12px;'>
-          AoC3P0 Systems &nbsp;|&nbsp; The Builder Foundry &nbsp;|&nbsp; Conception DNA Architecture<br>
-          <span style='color:#334155;'>bobtherobotbuilder.com</span>
-        </div>
-    """, unsafe_allow_html=True)
-    st.stop()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LOGGED-IN APP
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
-
-# Warm up AI service
-if not st.session_state.services_warmed:
-    ping_service(f"{AI_URL}/health", timeout=5.0)
-    st.session_state.services_warmed = True
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR
-# ══════════════════════════════════════════════════════════════════════════════
-with st.sidebar:
-    if os.path.exists("aoc3po_logo.png"):
-        st.image("aoc3po_logo.png", width=200)
-
-    st.markdown("---")
-    tier_colors = {"master": "#FFD700", "pro": "#FF4500", "starter": "#94A3B8", "trial": "#10B981"}
-    tc = tier_colors.get(st.session_state.tier, "#94A3B8")
-    safe_name  = html.escape(st.session_state.user_name or "Unknown")
-    safe_email = html.escape(st.session_state.user_email or "")
-    safe_tier  = html.escape(st.session_state.tier.upper() if st.session_state.tier else "")
-    st.markdown(f"""
-        <div style='background:#1E293B; padding:12px; border-radius:6px;
-                    border-left:4px solid {tc};'>
-          <div style='color:#94A3B8; font-size:12px;'>OPERATOR</div>
-          <div style='color:white; font-weight:bold;'>{safe_name}</div>
-          <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
-            {safe_email}</div>
-          <div style='color:{tc}; font-size:11px; font-weight:bold; margin-top:4px;'>
-            {safe_tier} CLEARANCE</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    if st.button("⚙️  FORGE BLUEPRINT",   use_container_width=True):
-        st.session_state.active_tab = "forge"
-    if st.button("🗄️  CONCEPTION VAULT",  use_container_width=True):
-        st.session_state.active_tab = "vault"
-        st.session_state.vault_data = None
-    if st.button("🔬  EQUIPMENT SCANNER", use_container_width=True):
-        st.session_state.active_tab = "scanner"
-    if st.button("🧠  CONCEPTION DNA",    use_container_width=True):
-        st.session_state.active_tab = "conception"
-    if st.button("💬  ARENA CHAT",        use_container_width=True):
-        st.session_state.active_tab = "chat"
-
-    st.markdown("---")
-
-    # Quota meter
-    q = api_get(f"{BILLING_URL}/billing/quota/{st.session_state.user_email}", timeout=5.0)
-    if not isinstance(q, APIError):
-        used  = q.get("build_count", 0)
-        limit = q.get("build_limit", 25)
-        pct   = min(used / max(limit, 1), 1.0)
-        bar_color = "#FF4500" if pct > 0.8 else "#1D9E75"
-        st.markdown(f"""
-            <div style='font-size:11px; color:#94A3B8; margin-bottom:4px;'>
-              BUILD QUOTA: {used} / {limit}</div>
-            <div style='background:#1E293B; border-radius:4px; height:8px;'>
-              <div style='background:{bar_color}; width:{pct*100:.0f}%;
-                          height:8px; border-radius:4px;'></div>
-            </div>
-        """, unsafe_allow_html=True)
-        if pct >= 1.0:
-            st.error("Quota exhausted.")
-            if st.session_state.tier == "trial":
-                st.markdown("""
-                    <div style='background:#1E293B; padding:12px; border-radius:6px;
-                                border:1px solid #10B981; text-align:center; margin:8px 0;'>
-                      <div style='color:#10B981; font-size:12px; font-weight:bold;'>
-                        Your free build is used!</div>
-                      <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
-                        Upgrade to keep forging blueprints</div>
-                    </div>
-                """, unsafe_allow_html=True)
-                st.link_button("GET STARTER $25/mo", STRIPE_STARTER, use_container_width=True)
-            elif st.session_state.tier == "starter":
-                st.link_button("UPGRADE TO PRO", STRIPE_PRO, use_container_width=True)
-            elif st.session_state.tier == "pro":
-                st.link_button("UPGRADE TO MASTER", STRIPE_MASTER, use_container_width=True)
-
-    st.markdown("---")
-    if st.button("LOGOUT", use_container_width=True):
-        st.session_state.clear()
-        for k, v in _defaults.items():
-            st.session_state[k] = v
-        st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB: FORGE BLUEPRINT
-# ══════════════════════════════════════════════════════════════════════════════
-if st.session_state.active_tab == "forge":
-    st.markdown("### ACTIVE ENGINEERING AGENTS")
-    cols = st.columns(3)
-    with cols[0]:
-        st.markdown("#### 🟠 GROK-3")
-        st.caption("MECHANICAL / METALLURGY / HYDRAULICS")
-        st.status("READY", state="complete")
-    with cols[1]:
-        st.markdown("#### 🔵 CLAUDE SONNET")
-        st.caption("SYSTEMS ARCHITECTURE / EMBEDDED LOGIC")
-        st.status("READY", state="complete")
-    with cols[2]:
-        st.markdown("#### 🟢 GEMINI 2.5 FLASH")
-        st.caption("SYNTHESIS ENGINE / CONCEPTION VAULT")
-        st.status("READY", state="complete")
-
-    st.markdown("---")
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        project_name = st.text_input(
-            "PROJECT IDENTIFIER",
-            placeholder="e.g., Hydraulic Log Splitter, Cat Litter Robot, Go-Kart",
-            max_chars=200
-        )
-        inventory_input = st.text_area(
-            "INVENTORY MANIFEST / JUNK DESCRIPTION",
-            placeholder="List every item you have — motors, machines, scrap metal, electronics...",
-            height=260, max_chars=5000
-        )
-
-    with col_right:
-        st.markdown("### BUILD PARAMETERS")
-        detail_level = st.select_slider(
-            "SPECIFICATION DEPTH",
-            options=["Standard", "Industrial", "Experimental"]
-        )
-        st.markdown("&nbsp;")
-        forge = st.button("🚀 FORGE BLUEPRINT", use_container_width=True)
-
-        if forge:
-            if not project_name or not project_name.strip():
-                st.error("Project identifier is required.")
-            elif not inventory_input or not inventory_input.strip():
-                st.error("Inventory manifest is required.")
-            elif len(inventory_input.strip()) < 10:
-                st.error("Describe your inventory in more detail.")
-            else:
-                with st.spinner("Initiating Round Table protocols..."):
-                    result = api_post(f"{AI_URL}/generate", {
-                        "junk_desc":    inventory_input.strip(),
-                        "project_type": project_name.strip(),
-                        "detail_level": detail_level,
-                        "user_email":   st.session_state.user_email,
-                    }, timeout=60.0)
-
-                    if isinstance(result, APIError):
-                        if result.status == 429:
-                            st.warning("Too many forge requests. Wait a few minutes.")
-                        else:
-                            st.error(result.detail)
-                    else:
-                        st.session_state.active_task = result.get("task_id")
-                        st.session_state.forge_attempts = 0
-                        st.success("Agents deployed. Blueprint forging...")
-
-    # ── TASK POLLING ──
-    if st.session_state.active_task:
-        max_forge_attempts = 40  # 40 x 3s = 2 minutes max
-
-        if st.session_state.forge_attempts >= max_forge_attempts:
-            st.error("Forge timed out. The server may be under heavy load. Try again.")
-            st.session_state.active_task = None
-            st.session_state.forge_attempts = 0
-        else:
-            st.markdown("---")
-            st.markdown("### CURRENT BUILD LOG")
-            task_id = st.session_state.active_task
-
-            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
-
-            if isinstance(result, APIError):
-                st.warning(f"Polling interrupted: {result.detail}")
-                st.session_state.forge_attempts += 1
-                time.sleep(5)
-                st.rerun()
-            else:
-                state = result.get("status")
-
-                if state == "complete":
-                    st.balloons()
-                    st.markdown("#### SYNTHESIS COMPLETE")
-
-                    res       = result.get("result", {})
-                    blueprint = res.get("content", "")
-                    build_id  = res.get("build_id", "")
-                    schematic = res.get("schematic_svg", "")
-
-                    _show_schematic(schematic, build_id)
-                    st.markdown(blueprint)
-                    if build_id:
-                        _download_buttons(build_id)
-                    st.info("Blueprint archived in Conception DNA Vault.")
-                    st.session_state.active_task = None
-                    st.session_state.forge_attempts = 0
-
-                elif state == "failed":
-                    error_msg = result.get("error", "")
-                    if "TimeLimitExceeded" in error_msg:
-                        st.error("Blueprint timed out. Try Standard depth or a simpler project.")
-                    else:
-                        st.error("The Round Table failed to reach consensus. Check your manifest.")
-                    st.session_state.active_task = None
-                    st.session_state.forge_attempts = 0
-
-                else:
-                    msg = result.get("message", "Initializing Round Table protocols...")
-                    elapsed = st.session_state.forge_attempts * 3
-                    st.markdown(f"""
-                        <div style='background:#1E293B; padding:16px; border-radius:8px;
-                                    border-left:4px solid #FF4500; margin:8px 0;'>
-                          <div style='color:#FF4500; font-size:13px; font-weight:bold;
-                                      font-family:monospace; letter-spacing:1px;'>
-                            ROUND TABLE ACTIVE ({elapsed}s)</div>
-                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
-                            {html.escape(msg)}</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.session_state.forge_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB: CONCEPTION VAULT
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.active_tab == "vault":
-    st.markdown("### CONCEPTION DNA VAULT")
-    st.caption("All blueprints archived for Conception's learning and your reference.")
-
-    if st.session_state.vault_data is None:
-        with st.spinner("Loading your vault..."):
-            result = api_get(f"{EXPORT_URL}/export/vault/{st.session_state.user_email}")
-            st.session_state.vault_data = result if not isinstance(result, APIError) else {}
-
-    vault  = st.session_state.vault_data
-    builds = vault.get("builds", [])
-
-    # Stats
-    stats = api_get(f"{EXPORT_URL}/export/stats/{st.session_state.user_email}", timeout=8.0)
-    if not isinstance(stats, APIError):
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Total Builds",     stats.get("total_builds", 0))
-        s2.metric("Tokens Consumed",  f"{stats.get('total_tokens', 0):,}")
-        s3.metric("Conception Ready", stats.get("conception_ready", 0))
-        s4.metric("In Vault",         vault.get("count", 0))
-
-    st.markdown("---")
-
-    if not builds:
-        st.info("No blueprints in your vault yet. Forge your first blueprint in the FORGE tab.")
-    else:
-        search = st.text_input("🔍 Search vault", placeholder="Filter by project name...")
-
-        for b in builds:
-            proj    = b.get("project_type", "Untitled")
-            bid     = b.get("id")
-            preview = b.get("blueprint_preview", "")
-            tokens  = b.get("tokens_used", 0)
-            date    = b.get("created_at", "")[:10] if b.get("created_at") else ""
-            ready   = b.get("conception_ready", False)
-
-            if search and search.lower() not in proj.lower():
-                continue
-
-            with st.expander(f"{'🧠' if ready else '📄'}  {proj}  —  {date}  |  {tokens:,} tokens"):
-                st.caption(preview)
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("📖 LOAD FULL BLUEPRINT", key=f"load_{bid}"):
-                        full = api_get(f"{EXPORT_URL}/export/blueprint/{bid}")
-                        if not isinstance(full, APIError):
-                            st.markdown("---")
-                            st.markdown(full.get("blueprint", ""))
-                        else:
-                            st.error(f"Failed to load: {full.detail}")
-                with col2:
-                    data, ok = _cached_download(f"{EXPORT_URL}/export/download/{bid}?fmt=md")
-                    if ok:
-                        st.download_button("📥 .md", data=data,
-                                          file_name=f"blueprint_{bid}.md",
-                                          mime="text/markdown", key=f"dlmd_{bid}",
-                                          use_container_width=True)
-                with col3:
-                    data, ok = _cached_download(f"{EXPORT_URL}/export/download/{bid}?fmt=txt")
-                    if ok:
-                        st.download_button("📥 .txt", data=data,
-                                          file_name=f"blueprint_{bid}.txt",
-                                          mime="text/plain", key=f"dltxt_{bid}",
-                                          use_container_width=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB: EQUIPMENT SCANNER
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.active_tab == "scanner":
-    st.markdown("### EQUIPMENT SCANNER")
-    st.caption("Upload a photo of any hardware. Gemini Vision identifies every component.")
-
-    col_left, col_right = st.columns([1, 1])
-    with col_left:
-        uploaded = st.file_uploader("Upload equipment photo", type=["jpg", "jpeg", "png", "webp"])
-        context  = st.text_input("Scan context", placeholder="e.g., underwater ROV motor assembly")
-
-        if st.button("🔬 RUN SCAN", use_container_width=True):
-            if not uploaded:
-                st.error("Upload an image first.")
-            else:
-                with st.spinner("Compressing image for analysis..."):
-                    # Compress image before sending — prevents 15MB iPhone photos
-                    # from crashing the backend with 413 Payload Too Large
-                    if _PIL_AVAILABLE:
-                        img = Image.open(uploaded)
-                        if img.mode in ("RGBA", "P"):
-                            img = img.convert("RGB")
-                        img.thumbnail((1024, 1024))
-                        buf = _io.BytesIO()
-                        img.save(buf, format="JPEG", quality=85)
-                        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-                        data_url = f"data:image/jpeg;base64,{b64}"
-                    else:
-                        # PIL not available — send raw (less safe but functional)
-                        b64 = base64.b64encode(uploaded.read()).decode("utf-8")
-                        mime = uploaded.type or "image/jpeg"
-                        data_url = f"data:{mime};base64,{b64}"
-
-                with st.spinner("Running computer vision analysis..."):
-                    result = api_post(f"{WORKSHOP_URL}/scan/base64", {
-                        "image_base64": data_url,
-                        "user_email":   st.session_state.user_email,
-                        "context":      context or "general hardware scan",
-                    }, timeout=15.0)
-
-                    if isinstance(result, APIError):
-                        st.error(f"Scanner error: {result.detail}")
-                    else:
-                        st.session_state.scan_task = result.get("task_id")
-                        st.session_state.scan_attempts = 0
-                        st.rerun()
-
-    with col_right:
-        if st.session_state.scan_task:
-            task_id = st.session_state.scan_task
-            max_scan_attempts = 20  # 20 x 3s = 60s max wait
-
-            if st.session_state.scan_attempts >= max_scan_attempts:
-                st.error("Scan timed out. Try again or use a different image.")
-                st.session_state.scan_task = None
-                st.session_state.scan_attempts = 0
-            else:
-                # Show progress
-                progress = st.session_state.scan_attempts / max_scan_attempts
-                remaining = max_scan_attempts - st.session_state.scan_attempts
-                st.progress(progress, text=f"Analyzing... ({remaining * 3}s remaining)")
-
-                result = api_get(f"{WORKSHOP_URL}/task/status/{task_id}")
-
-                if isinstance(result, APIError):
-                    st.info("Waiting for scan result...")
-                    st.session_state.scan_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
-                elif result.get("status") == "complete":
-                    scan_data = result.get("result", {}).get("scan_result", {})
-                    ident = scan_data.get("identification", {})
-                    comps = scan_data.get("components", [])
-                    st.success(f"**{ident.get('equipment_name', 'Unknown Equipment')}**")
-                    st.markdown("#### Identified Components")
-                    for c in comps:
-                        st.markdown(f"- **{c.get('name', '?')}** x {c.get('quantity', '?')}")
-                    st.session_state.scan_task = None
-                    st.session_state.scan_attempts = 0
-                elif result.get("status") == "failed":
-                    st.error("Scan failed. Try another image.")
-                    st.session_state.scan_task = None
-                    st.session_state.scan_attempts = 0
-                else:
-                    st.info("Gemini Vision analyzing... please wait.")
-                    st.session_state.scan_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
-
-    # Scan history
-    st.markdown("---")
-    st.markdown("#### Past Scans")
-    scans = api_get(f"{EXPORT_URL}/export/scan/{st.session_state.user_email}", timeout=8.0)
-    if not isinstance(scans, APIError):
-        for s in scans.get("scans", [])[:10]:
-            with st.expander(f"🔩 {s.get('equipment_name','Unknown')} — {str(s.get('created_at',''))[:10]}"):
-                for comp in s.get("scan_result", {}).get("components", []):
-                    st.markdown(f"- {comp.get('name','?')} x {comp.get('quantity','?')}")
-    else:
-        st.caption("Scan history unavailable.")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB: CONCEPTION DNA
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.active_tab == "conception":
-    st.markdown("### CONCEPTION DNA — LEARNING CORE")
-    st.caption("Conception learns from every blueprint forged. The more you build, the smarter he gets.")
-
-    stats = api_get(f"{EXPORT_URL}/export/stats/{st.session_state.user_email}", timeout=8.0)
-
-    if isinstance(stats, APIError):
-        st.error(f"Could not load Conception data: {stats.detail}")
-    else:
-        total  = stats.get("total_builds", 0)
-        tokens = stats.get("total_tokens", 0)
-        ready  = stats.get("conception_ready", 0)
-        pct    = round((ready / max(total, 1)) * 100, 1)
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Blueprints Absorbed", total)
-        c2.metric("Tokens Processed",    f"{tokens:,}")
-        c3.metric("Conception Ready",    f"{pct}%")
-
-        st.markdown("---")
-        st.markdown("#### CONCEPTION KNOWLEDGE INDEX")
-        knowledge_pct = min(total / 500, 1.0)
-        st.progress(knowledge_pct,
-                    text=f"{total} / 500 blueprints — {knowledge_pct*100:.1f}% knowledge saturation")
-
-        st.markdown("#### TOP ENGINEERING DOMAINS LEARNED")
-        top = stats.get("top_projects", [])
-        if top:
-            for p in top:
-                proj  = p.get("project", "Unknown")
-                count = p.get("count", 0)
-                bar   = min(count / max(top[0].get("count", 1), 1), 1.0)
-                st.markdown(f"**{proj}**")
-                st.progress(bar, text=f"{count} blueprints")
-        else:
-            st.info("No blueprints forged yet. Start building to train Conception.")
-
-        st.markdown("---")
-        st.markdown("#### CONCEPTION STATUS")
-        if total == 0:
-            st.warning("Offline — No training data yet.")
-        elif total < 10:
-            st.warning(f"Initializing — {total} blueprints absorbed. Keep forging.")
-        elif total < 50:
-            st.info(f"Learning — {total} blueprints in memory.")
-        elif total < 200:
-            st.success(f"Active — {total} blueprints. Conception is developing.")
-        else:
-            st.success(f"ADVANCED — {total} blueprints. Conception is growing rapidly.")
-
-        st.markdown("---")
-        st.markdown("#### NEXT MILESTONE")
-        milestones = [10, 50, 100, 200, 500]
-        next_m = next((m for m in milestones if m > total), 500)
-        st.info(f"**{next_m - total} more blueprints** until the next evolution milestone ({next_m} total).")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB: ARENA CHAT
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.active_tab == "chat":
-    st.markdown("### FOUNDRY ARENA CHAT")
-    st.caption("Live global channel. All operators. All tiers.")
-
-    with st.form("chat_form", clear_on_submit=True):
-        msg_text = st.text_input("Message", placeholder="Speak, operator...")
-        sent = st.form_submit_button("TRANSMIT", use_container_width=True)
-        if sent and msg_text.strip():
-            api_post(f"{AI_URL}/arena/chat/send", {
-                "user_name": st.session_state.user_name or "Anonymous",
-                "tier":      st.session_state.tier,
-                "message":   msg_text.strip(),
-            }, timeout=5.0)
-
-    messages = api_get(f"{AI_URL}/arena/chat/recent", timeout=5.0)
-    if not isinstance(messages, APIError):
-        tier_badge = {"master": "🥇", "pro": "🟠", "starter": "⚪", "trial": "🟢"}
-        for m in messages:
-            badge = tier_badge.get(m.get("tier", ""), "⚪")
-            st.markdown(
-                f"`{m.get('time', '')}` {badge} **{m.get('user', '?')}** — {m.get('text', '')}",
-                unsafe_allow_html=False
+    # Token budget check
+    inventory_text = _truncate(junk_desc, 3000)
+    texts = [system, inventory_text, project_type]
+    texts = _token_budget_check(texts, max_toks.get(detail_level, 2000) * 2, "grok_input")
+
+    try:
+        async with httpx.AsyncClient(timeout=timeouts.get(detail_level, 40.0)) as client:
+            resp = await client.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROK_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "grok-3",
+                    "messages": [
+                        {"role": "system", "content": texts[0]},
+                        {"role": "user", "content": (
+                            f"WHAT I WANT TO BUILD:\n{texts[2]}\n\n"
+                            f"WHAT I ACTUALLY HAVE:\n{texts[1]}\n\n"
+                            f"Analyze every item. Return ONLY the JSON structure."
+                        )},
+                    ],
+                    "max_tokens": max_toks.get(detail_level, 2000),
+                    "temperature": 0.3,
+                },
             )
+
+        if resp.status_code == 200:
+            d = resp.json()
+            try:
+                content = d["choices"][0]["message"]["content"]
+            except (KeyError, IndexError):
+                return {"analysis": "Grok returned unexpected format.", "tokens": 0}
+
+            tokens = d.get("usage", {}).get("total_tokens", 0)
+
+            # Try to parse as JSON
+            try:
+                clean = content.strip()
+                if clean.startswith("```"):
+                    clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+                if clean.endswith("```"):
+                    clean = clean[:-3].strip()
+                parsed = json.loads(clean)
+                return {"analysis": parsed, "tokens": tokens}
+            except json.JSONDecodeError:
+                # Grok didn't return valid JSON — fall back to raw text
+                _log_event("grok_json_fallback", reason="invalid JSON from Grok")
+                return {"analysis": content, "tokens": tokens}
+
+        # Any non-200 raises so the retry wrapper can handle it
+        raise Exception(f"Grok API returned HTTP {resp.status_code}")
+
+    except httpx.TimeoutException:
+        raise Exception(f"Grok timeout at {detail_level}")
+
+
+async def _run_grok(junk_desc: str, project_type: str,
+                    detail_level: str, conception_context: str) -> dict:
+    """Grok with retry wrapper."""
+    try:
+        return await _retry_async(
+            _run_grok_inner, junk_desc, project_type, detail_level, conception_context,
+            max_attempts=2, base_delay=5.0, label="Grok"
+        )
+    except Exception as e:
+        log.error("Grok failed after retries: %s", e)
+        return {"analysis": f"Grok unavailable: {e}", "tokens": 0}
+
+
+def _format_grok_for_claude(grok_analysis) -> str:
+    """Convert Grok's structured JSON back to readable text for Claude's prompt."""
+    if isinstance(grok_analysis, str):
+        return grok_analysis  # Already text (fallback mode)
+
+    if not isinstance(grok_analysis, dict):
+        return "No Grok analysis available."
+
+    lines = []
+    lines.append(f"FEASIBILITY SCORE: {grok_analysis.get('feasibility_score', '?')}/100\n")
+
+    for item in grok_analysis.get("components", []):
+        lines.append(f"FROM: {item.get('item_source', '?')}")
+        for part in item.get("harvested_parts", []):
+            lines.append(f"  - {part.get('part', '?')}: {part.get('specs', '?')}")
+            lines.append(f"    Use: {part.get('project_use', '?')} [{part.get('confidence', '?')}]")
+        lines.append("")
+
+    gaps = grok_analysis.get("critical_gaps", [])
+    if gaps:
+        lines.append("CRITICAL GAPS: " + ", ".join(gaps))
+
+    limits = grok_analysis.get("honest_limitations", [])
+    if limits:
+        lines.append("LIMITATIONS: " + ", ".join(limits))
+
+    for idea in grok_analysis.get("creative_possibilities", []):
+        lines.append(f"CREATIVE IDEA: {idea.get('idea', '?')} — {idea.get('why_unique', '')}")
+
+    summary = grok_analysis.get("analysis_summary", "")
+    if summary:
+        lines.append(f"\nSUMMARY:\n{summary}")
+
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AGENT 2: CLAUDE — BLUEPRINT (markdown output, structured input)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _run_claude_sync(junk_desc: str, project_type: str,
+                     grok_analysis, detail_level: str,
+                     conception_context: str, grok_ok: bool) -> dict:
+    if not ANTHROPIC_KEY:
+        return {"blueprint": "Claude offline.", "tokens": 0}
+
+    detail_map = {
+        "Standard": (
+            "Complete blueprint with 10 sections. "
+            "Include specific measurements and dimensions."
+        ),
+        "Industrial": (
+            "Industrial-grade. 10 standard sections PLUS: "
+            "POWER BUDGET, TORQUE CALCULATIONS, WEIGHT DISTRIBUTION, "
+            "WIRING DIAGRAM, BILL OF MATERIALS, TOLERANCES."
+        ),
+        "Experimental": (
+            "Research-grade. Everything in Industrial PLUS: "
+            "FAILURE MODE ANALYSIS, THERMAL ANALYSIS, FATIGUE LIFE, "
+            "CONTROL SYSTEM with PID, ALTERNATIVE DESIGNS, "
+            "PERFORMANCE ENVELOPE, UPGRADE PATH."
+        ),
+    }
+
+    grok_warning = ""
+    if not grok_ok:
+        grok_warning = (
+            "\n\nWARNING: Grok's inventory analysis failed. You MUST analyze "
+            "the raw inventory yourself. Do NOT rely on the Grok section below.\n"
+        )
+
+    system = (
+        "You are CLAUDE-SONNET, a senior mechanical engineer on AoC3P0 Builder Foundry.\n\n"
+        "CRITICAL: PROJECT GOAL is what user wants to BUILD. INVENTORY is what they OWN.\n\n"
+        "DESIGN ORIGINALITY: Do NOT copy commercial designs. INVENT a novel mechanism "
+        "based on what the inventory provides. Propose 2+ approaches in the overview.\n\n"
+        "MATERIALS: Every part must trace to a specific inventory item.\n"
+        "Exception: basic consumables (fasteners, wires, adhesives).\n\n"
+        "HONESTY: Carry [EST] tags forward. Section 9: HONEST ASSESSMENT & GAPS. "
+        "Section 10: BUDGET GAP-FILLER SHOPPING LIST (Harbor Freight, salvage first).\n\n"
+        "10 SECTIONS: 1-Overview, 2-Materials Manifest, 3-Tools, 4-Assembly Sequence, "
+        "5-Technical Specs, 6-Safety, 7-Testing, 8-Modifications, "
+        "9-Honest Assessment, 10-Budget Gap-Filler.\n\n"
+        + detail_map.get(detail_level, detail_map["Standard"])
+        + grok_warning
+        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+    )
+
+    token_limit = {"Standard": 4000, "Industrial": 6000, "Experimental": 8000}
+    max_out = token_limit.get(detail_level, 4000)
+
+    # Format Grok's analysis for Claude
+    grok_text = _format_grok_for_claude(grok_analysis)
+    inventory_text = _truncate(junk_desc, 3000)
+    grok_text = _truncate(grok_text, 4000)
+
+    # Token budget check on input
+    input_estimate = _estimate_tokens(system + grok_text + inventory_text + project_type)
+    if input_estimate > 12000:
+        _log_event("claude_input_truncated", estimated_tokens=input_estimate)
+        grok_text = _truncate(grok_text, 2500)
+        inventory_text = _truncate(inventory_text, 2000)
+
+    try:
+        client = _get_anthropic()
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=max_out,
+            temperature=0.1,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"GROK-3 INVENTORY ANALYSIS:\n{grok_text}\n\n"
+                    f"PROJECT GOAL:\n{project_type}\n\n"
+                    f"RAW INVENTORY:\n{inventory_text}\n\n"
+                    f"Generate the complete blueprint. Every material must reference "
+                    f"which inventory item it came from."
+                ),
+            }],
+        )
+        return {
+            "blueprint": resp.content[0].text,
+            "tokens": resp.usage.input_tokens + resp.usage.output_tokens,
+        }
+    except Exception as e:
+        log.error("Claude failed: %s", e)
+        return {"blueprint": f"Claude unavailable: {e}", "tokens": 0}
+
+
+async def _run_claude(junk_desc: str, project_type: str,
+                      grok_analysis, detail_level: str,
+                      conception_context: str, grok_ok: bool = True) -> dict:
+    return await asyncio.to_thread(
+        _run_claude_sync, junk_desc, project_type,
+        grok_analysis, detail_level, conception_context, grok_ok
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AGENT 3: GEMINI — QUALITY REVIEW (with retry)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_GEMINI_OFFLINE = {
+    "review_notes": "Gemini offline.", "inventory_usage_score": 0,
+    "safety_flags": [], "innovations": [], "difficulty_rating": "Unknown",
+    "estimated_build_time": "Unknown", "estimated_cost_usd": "Unknown",
+    "tags": [], "conception_ready": False,
+}
+
+
+async def _run_gemini_inner(blueprint: str, project_type: str,
+                             conception_context: str) -> dict:
+    if not GEMINI_KEY or not _GENAI_AVAILABLE:
+        return {"notes": _GEMINI_OFFLINE, "tokens": 0}
+
+    model = genai.GenerativeModel(
+        "gemini-2.5-flash",
+        generation_config={"response_mime_type": "application/json", "temperature": 0.1},
+    )
+
+    prompt = (
+        "Review this engineering blueprint. Return JSON only:\n"
+        '{"review_notes":"...", "inventory_usage_score":0-100, '
+        '"safety_flags":[], "innovations":[], '
+        '"difficulty_rating":"Beginner|Intermediate|Advanced|Expert", '
+        '"estimated_build_time":"...", "estimated_cost_usd":"...", '
+        '"tags":[], "conception_ready":true/false}\n'
+        + (f"CONTEXT: {conception_context}\n" if conception_context else "")
+        + f"BLUEPRINT:\n{_truncate(blueprint, 3000)}\nPROJECT: {project_type}"
+    )
+
+    resp = await model.generate_content_async(prompt)
+    text = resp.text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    notes = json.loads(text)
+    return {"notes": notes, "tokens": 0}
+
+
+async def _run_gemini(blueprint: str, project_type: str,
+                      conception_context: str) -> dict:
+    try:
+        return await _retry_async(
+            _run_gemini_inner, blueprint, project_type, conception_context,
+            max_attempts=2, base_delay=4.0, label="Gemini"
+        )
+    except json.JSONDecodeError:
+        _log_event("gemini_json_error")
+        return {"notes": {**_GEMINI_OFFLINE, "review_notes": "Gemini returned invalid JSON."}, "tokens": 0}
+    except Exception as e:
+        log.error("Gemini failed: %s", e)
+        return {"notes": {**_GEMINI_OFFLINE, "review_notes": f"Gemini error: {e}"}, "tokens": 0}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AGENT 4: CLAUDE — SVG SCHEMATIC (with retry)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _generate_schematic_sync(blueprint: str, project_type: str,
+                              junk_desc: str, max_excerpt: int = 2000) -> str:
+    if not ANTHROPIC_KEY:
+        return ""
+
+    system = (
+        "You are a technical illustrator. Return ONLY valid SVG code.\n\n"
+        "RULES: output starts with <svg ends with </svg>. Nothing else.\n"
+        "Allowed: svg, rect, text, line, g, circle, ellipse, polygon, path.\n"
+        "No foreignObject/image/style/script/defs. Inline styling only.\n"
+        "font-family='Arial, sans-serif'. viewBox='0 0 800 550'.\n\n"
+        "DRAW the project as it would LOOK assembled. Side-view.\n"
+        "Use shapes for real form, not labeled rectangles.\n\n"
+        "LABELS: leader lines to left/right sides. Bold 10px name + 8px gray source.\n"
+        "COLORS: Structure=#2563EB, Motors=#DC2626, Electronics=#16A34A, "
+        "Sensors=#9333EA, Belts=#D97706. All opacity=0.2.\n"
+        "Title top-left, dimension lines, color legend bottom-right."
+    )
+
+    try:
+        client = _get_anthropic()
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            temperature=0.0,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Draw: {project_type}\n"
+                    f"Inventory: {_truncate(junk_desc, 500)}\n"
+                    f"Blueprint:\n{_truncate(blueprint, max_excerpt)}\n"
+                    f"Output ONLY <svg>...</svg>."
+                ),
+            }],
+        )
+        svg = resp.content[0].text.strip()
+        start = svg.find("<svg")
+        end = svg.rfind("</svg>")
+        if start == -1 or end == -1:
+            return ""
+        svg = svg[start:end + 6].replace("```", "").replace("`", "")
+        if len(svg) > 20000:
+            return ""
+        return svg
+    except Exception as e:
+        log.error("Schematic failed: %s", e)
+        return ""
+
+
+async def _generate_schematic(blueprint: str, project_type: str,
+                               junk_desc: str) -> str:
+    # Smart excerpt sizing: shorter blueprints get more context, huge ones get trimmed
+    bp_tokens = _estimate_tokens(blueprint)
+    if bp_tokens < 2000:
+        first_try = min(len(blueprint), 2500)
+    elif bp_tokens < 4000:
+        first_try = 2000
     else:
-        st.caption("Chat unavailable.")
+        first_try = 1500  # Experimental blueprints are huge — keep excerpt short
 
-    if st.button("🔄 REFRESH", use_container_width=True):
-        st.rerun()
+    svg = await asyncio.to_thread(
+        _generate_schematic_sync, blueprint, project_type, junk_desc, first_try
+    )
+    if svg:
+        return svg
+
+    # Retry with half the excerpt
+    retry_len = max(first_try // 2, 500)
+    _log_event("schematic_retry", first_try=first_try, retry_len=retry_len)
+    return await asyncio.to_thread(
+        _generate_schematic_sync, blueprint, project_type, junk_desc, retry_len
+    )
 
 
-# ── FOOTER ─────────────────────────────────────────────────────────────────────
-st.markdown("---")
-st.caption("AoC3P0 Systems | The Builder Foundry | Conception DNA Architecture")
+# ══════════════════════════════════════════════════════════════════════════════
+# FORGE PIPELINE
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── GLOBAL ERROR DISPLAY ──────────────────────────────────────────────────────
-# If any unhandled exception occurred during rendering, Streamlit shows its own
-# error widget. This is a safety net for the developer — in production, each
-# section already handles errors via isinstance(result, APIError) checks.
-# To see raw exceptions during development, set: SHOW_DEBUG=1 in env vars.
-if os.getenv("SHOW_DEBUG"):
-    st.markdown("---")
-    with st.expander("🔧 DEBUG INFO"):
-        st.json({
-            "session_state": {k: str(v)[:100] for k, v in st.session_state.items()},
-            "services": {
-                "auth": AUTH_URL,
-                "ai": AI_URL,
-                "workshop": WORKSHOP_URL,
-                "export": EXPORT_URL,
-                "billing": BILLING_URL,
-            },
-        })
+async def _forge_pipeline(user_email: str, junk_desc: str,
+                           project_type: str, detail_level: str,
+                           task=None) -> dict:
+    timings = {}
+    _heartbeat_active = True
+
+    def _update(msg: str):
+        if task:
+            task.update_state(state="PROGRESS", meta={"message": msg})
+
+    async def _heartbeat():
+        """Send periodic updates so frontend knows we're alive."""
+        tick = 0
+        while _heartbeat_active:
+            await asyncio.sleep(10)
+            tick += 1
+            if task and _heartbeat_active:
+                task.update_state(state="PROGRESS",
+                    meta={"message": f"Round Table deliberating... ({tick * 10}s elapsed)"})
+
+    # Start heartbeat
+    heartbeat_task = asyncio.ensure_future(_heartbeat())
+
+    try:
+        # 0 — Conception memory
+        _update("Scanning Conception memory banks...")
+        with _Timer("Conception Recall") as t:
+            ctx = await _recall_conception_memory(user_email, junk_desc, project_type)
+        timings["recall"] = t.elapsed
+
+        # 1 — Grok
+        _update("GROK-3 disassembling inventory... identifying harvestable components")
+        with _Timer("Grok") as t:
+            grok_r = await _run_grok(junk_desc, project_type, detail_level, ctx)
+        timings["grok"] = t.elapsed
+        grok_analysis = grok_r["analysis"]
+        grok_ok = not _grok_failed(grok_analysis)
+
+        if not grok_ok:
+            _update("GROK-3 incomplete — CLAUDE analyzing inventory directly")
+
+        # 2 — Claude blueprint
+        _update("CLAUDE drafting engineering blueprint...")
+        with _Timer("Claude Blueprint") as t:
+            claude_r = await _run_claude(junk_desc, project_type, grok_analysis,
+                                         detail_level, ctx, grok_ok)
+        timings["claude"] = t.elapsed
+        blueprint = claude_r["blueprint"]
+
+        # 3 + 4 — Gemini + Schematic PARALLEL
+        _update("GEMINI reviewing + rendering schematic...")
+        with _Timer("Gemini + Schematic") as t:
+            gemini_r, schematic_svg = await asyncio.gather(
+                _run_gemini(blueprint, project_type, ctx),
+                _generate_schematic(blueprint, project_type, junk_desc),
+            )
+        timings["parallel"] = t.elapsed
+
+    finally:
+        _heartbeat_active = False
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+    notes = gemini_r["notes"] if isinstance(gemini_r["notes"], dict) else {}
+    total_tokens = grok_r["tokens"] + claude_r["tokens"]
+
+    # ── Cost estimation per agent ──
+    costs = {}
+    # Grok: we have total tokens, estimate 40% input / 60% output
+    grok_tok = grok_r["tokens"]
+    costs["grok"] = _estimate_cost("grok", int(grok_tok * 0.4), int(grok_tok * 0.6))
+    # Claude: we have exact split from usage
+    claude_tok = claude_r["tokens"]
+    costs["claude_blueprint"] = _estimate_cost("claude", int(claude_tok * 0.5), int(claude_tok * 0.5))
+    # Schematic: estimate ~1K input, ~3K output
+    costs["claude_schematic"] = _estimate_cost("claude", 1000, 3000) if schematic_svg else 0
+    # Gemini: minimal cost
+    costs["gemini"] = _estimate_cost("gemini", 3000, 500)
+    costs["total"] = round(sum(costs.values()), 4)
+
+    # 5 — Save to database (async — won't block event loop)
+    _update("Archiving to Conception DNA Vault...")
+    build_id = None
+
+    def _db_save():
+        grok_text = (json.dumps(grok_analysis, indent=2) if isinstance(grok_analysis, dict)
+                     else str(grok_analysis))
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO builds
+                        (user_email, junk_desc, project_type, blueprint,
+                         grok_notes, claude_notes, tokens_used, conception_ready)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (user_email, junk_desc[:5000], project_type, blueprint,
+                     grok_text[:5000], notes.get("review_notes", "")[:2000],
+                     total_tokens, notes.get("conception_ready", False)),
+                )
+                bid = cur.fetchone()[0]
+                conn.commit()
+        return bid
+
+    try:
+        build_id = await asyncio.to_thread(_db_save)
+        _log_event("db_save", build_id=build_id)
+    except Exception as e:
+        log.error("DB save failed: %s", e)
+
+    # 6 — Conception learning
+    grok_text_for_absorb = (json.dumps(grok_analysis)[:2000] if isinstance(grok_analysis, dict)
+                            else str(grok_analysis)[:2000])
+    if build_id:
+        await _absorb_into_conception(
+            user_email, junk_desc, project_type, blueprint,
+            grok_text_for_absorb, notes.get("review_notes", ""),
+            build_id, total_tokens,
+        )
+
+    # 7 — Email blueprint to user (non-blocking)
+    email_sent = await asyncio.to_thread(
+        _send_blueprint_email, user_email, project_type, blueprint, build_id, notes
+    )
+
+    # Final structured log
+    _log_event("forge_complete",
+        user=user_email, project=project_type[:30], depth=detail_level,
+        total_s=round(sum(timings.values()), 1), timings=timings,
+        tokens=total_tokens, costs=costs,
+        grok_ok=grok_ok, has_schematic=bool(schematic_svg),
+        build_id=build_id, email_sent=email_sent, success=build_id is not None)
+
+    return {
+        "status":           "complete",
+        "build_id":         build_id,
+        "user_email":       user_email,
+        "project_type":     project_type,
+        "detail_level":     detail_level,
+        "content":          blueprint,
+        "schematic_svg":    schematic_svg,
+        "grok_analysis":    _format_grok_for_claude(grok_analysis) if isinstance(grok_analysis, dict) else grok_analysis,
+        "review_notes":     notes.get("review_notes", ""),
+        "safety_flags":     notes.get("safety_flags", []),
+        "innovations":      notes.get("innovations", []),
+        "difficulty":       notes.get("difficulty_rating", "Unknown"),
+        "build_time":       notes.get("estimated_build_time", "Unknown"),
+        "cost_estimate":    notes.get("estimated_cost_usd", "Unknown"),
+        "tags":             notes.get("tags", []),
+        "conception_ready": notes.get("conception_ready", False),
+        "tokens_used":      total_tokens,
+        "agents_used":      ["GROK-3", "CLAUDE-SONNET", "GEMINI-2.5-FLASH"],
+        "timings":          timings,
+        "costs":            costs,
+        "grok_ok":          grok_ok,
+        "grok_structured":  isinstance(grok_analysis, dict),
+        "conception_context_used": bool(ctx),
+        "email_sent":       email_sent,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CELERY TASK
+# ══════════════════════════════════════════════════════════════════════════════
+
+@celery_app.task(
+    bind=True,
+    name="ai_worker.forge_blueprint_task",
+    max_retries=2,
+    soft_time_limit=300,
+    time_limit=330,
+)
+def forge_blueprint_task(self, user_email: str, junk_desc: str,
+                          project_type: str, detail_level: str = "Standard"):
+    _log_event("forge_started", user=user_email,
+               project=project_type[:50], depth=detail_level)
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            _forge_pipeline(user_email, junk_desc, project_type, detail_level, task=self)
+        )
+    except Exception as e:
+        _log_event("forge_failed", user=user_email, error=str(e)[:200],
+                   retry=self.request.retries)
+        countdown = 10 if self.request.retries == 0 else 30
+        raise self.retry(exc=e, countdown=countdown)
+    finally:
+        loop.close()
