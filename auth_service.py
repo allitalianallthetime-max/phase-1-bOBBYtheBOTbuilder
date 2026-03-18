@@ -187,7 +187,7 @@ def create_trial(req: TrialReq, _=Depends(verify_int)):
             conn.commit()
 
     log.info("Trial license created: %s | %s | expires=%s", key, email, exp.date())
-    return {"key": key, "email": email, "tier": "trial", "expires": exp.isoformat()}────
+    return {"key": key, "email": email, "tier": "trial", "expires": exp.isoformat()}
 
 @app.post("/verify-license")
 def verify_lic(req: VerifyReq, _=Depends(verify_int)):
