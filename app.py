@@ -1,5 +1,25 @@
+"""
+APP.PY — BUILDER FOUNDRY STREAMLIT FRONTEND
+=============================================
+Public landing page → License auth → Forge pipeline → Vault → Scanner → DNA → Chat
+
+Fixes applied:
+  - base64 import moved to top level
+  - Logout properly resets None fields to None (not "")
+  - Agent display updated to GEMINI 2.5 FLASH
+  - 403 error handler wrapped in try/except for non-JSON responses
+  - Warm-up state cleared on logout
+  - Scanner uses Streamlit rerun pattern instead of blocking loop
+  - Input length validation prevents oversized payloads
+  - All httpx calls have explicit timeouts
+"""
+
 import streamlit as st
-import os, httpx, time, json
+import os
+import base64
+import httpx
+import time
+import json
 from dotenv import load_dotenv
 
 try:
@@ -8,60 +28,69 @@ except ImportError:
     BUILDER_CSS = ""
     FORGE_HEADER_HTML = "<h1 style='color:#FF4500; text-align:center;'>⚙️ THE BUILDER FOUNDRY</h1>"
 
-# ── CONFIGURATION ──
+# ── CONFIGURATION ──────────────────────────────────────────────────────────────
 load_dotenv()
 st.set_page_config(
-    page_title="AoC3P0 | THE BUILDER",
+    page_title="AoC3P0 | THE BUILDER FOUNDRY",
     page_icon="⚙️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-AUTH_URL      = os.getenv("AUTH_SERVICE_URL",      "http://localhost:8001")
-AI_URL        = os.getenv("AI_SERVICE_URL",         "http://localhost:8002")
-WORKSHOP_URL  = os.getenv("WORKSHOP_SERVICE_URL",   "http://localhost:8003")
-EXPORT_URL    = os.getenv("EXPORT_SERVICE_URL",     "http://localhost:8004")
-ANALYTICS_URL = os.getenv("ANALYTICS_SERVICE_URL",  "http://localhost:8005")
-BILLING_URL   = os.getenv("BILLING_SERVICE_URL",    "http://localhost:8006")
+AUTH_URL       = os.getenv("AUTH_SERVICE_URL",      "http://localhost:8001")
+AI_URL         = os.getenv("AI_SERVICE_URL",        "http://localhost:8002")
+WORKSHOP_URL   = os.getenv("WORKSHOP_SERVICE_URL",  "http://localhost:8003")
+EXPORT_URL     = os.getenv("EXPORT_SERVICE_URL",    "http://localhost:8004")
+ANALYTICS_URL  = os.getenv("ANALYTICS_SERVICE_URL", "http://localhost:8005")
+BILLING_URL    = os.getenv("BILLING_SERVICE_URL",   "http://localhost:8006")
 STRIPE_STARTER = os.getenv("STRIPE_URL_STARTER",    "#")
 STRIPE_PRO     = os.getenv("STRIPE_URL_PRO",        "#")
 STRIPE_MASTER  = os.getenv("STRIPE_URL_MASTER",     "#")
-INTERNAL_KEY   = os.getenv("INTERNAL_API_KEY",       "")
+INTERNAL_KEY   = os.getenv("INTERNAL_API_KEY",      "")
+
 
 def _h():
+    """Internal API auth header."""
     return {"x-internal-key": INTERNAL_KEY}
 
+
+# ── APPLY THEME ────────────────────────────────────────────────────────────────
 if BUILDER_CSS:
     st.markdown(BUILDER_CSS, unsafe_allow_html=True)
 
-# ── SESSION STATE ──
-for k, v in {
-    "logged_in":  False,
-    "user_email": "",
-    "user_name":  "",
-    "tier":       "",
-    "jwt_token":  "",
-    "active_task": None,
-    "vault_data": None,
-    "active_tab": "forge",
-}.items():
+# ── SESSION STATE ──────────────────────────────────────────────────────────────
+_defaults = {
+    "logged_in":      False,
+    "user_email":     "",
+    "user_name":      "",
+    "tier":           "",
+    "jwt_token":      "",
+    "active_task":    None,
+    "vault_data":     None,
+    "active_tab":     "forge",
+    "scan_task":      None,
+    "landing_warmed": False,
+    "services_warmed": False,
+}
+for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ─────────────────────────────────────────────
-# LANDING PAGE + AUTH GATE
-# ─────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LANDING PAGE + AUTH GATE (shown when not logged in)
+# ══════════════════════════════════════════════════════════════════════════════
 if not st.session_state.logged_in:
 
-    # ── SILENTLY WAKE SERVICES while visitor reads landing page ──
-    if "landing_warmed" not in st.session_state:
+    # ── Silently wake AI service while visitor reads landing page ──
+    if not st.session_state.landing_warmed:
         try:
             httpx.get(f"{AI_URL}/health", timeout=3.0)
         except Exception:
             pass
         st.session_state.landing_warmed = True
 
-    # ── HERO SECTION ──
+    # ── HERO ──
     st.markdown("""
         <div style='text-align:center; padding:40px 20px 20px;'>
           <div style='font-size:64px; margin-bottom:8px;'>&#9881;&#65039;</div>
@@ -247,14 +276,14 @@ if not st.session_state.logged_in:
               &#10003; Full assembly sequence &nbsp;&nbsp;
               &#10003; Safety notes &nbsp;&nbsp;
               &#10003; Testing procedures &nbsp;&nbsp;
-              &#10003; Downloadable .md and .txt</div>
+              &#10003; Honest assessment &amp; gap-filler shopping list</div>
             <div style='color:#F59E0B; font-size:12px; margin-top:8px;'>
               Estimated commercial equivalent: $2,500 - $4,000</div>
           </div>
         </div>
     """, unsafe_allow_html=True)
 
-    # ── FEATURES LIST ──
+    # ── FEATURES ──
     st.markdown("""
         <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
           <div style='display:flex; gap:16px; flex-wrap:wrap; justify-content:center;'>
@@ -364,7 +393,48 @@ if not st.session_state.logged_in:
         </div>
     """, unsafe_allow_html=True)
 
-    # ── LOGIN SECTION ──
+    # ── FREE TRIAL ──
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align:center; margin:20px 0 12px;'>
+          <h2 style='color:#10B981; font-size:28px;'>Try 1 Free Build</h2>
+          <p style='color:#64748B; font-size:14px;'>No credit card. Just your email. See what the Foundry can do.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    t1, t2, t3 = st.columns([1, 1.2, 1])
+    with t2:
+        trial_email = st.text_input("Email Address", placeholder="you@example.com",
+                                    key="trial_email")
+        if st.button("🚀 GET MY FREE BUILD", use_container_width=True):
+            if not trial_email or "@" not in trial_email:
+                st.warning("Enter a valid email address.")
+            else:
+                try:
+                    with st.spinner("Creating your trial license..."):
+                        resp = httpx.post(
+                            f"{AUTH_URL}/auth/trial",
+                            json={"email": trial_email.strip().lower()},
+                            headers=_h(), timeout=10.0
+                        )
+                        if resp.status_code == 200:
+                            trial_data = resp.json()
+                            trial_key = trial_data.get("key", "")
+                            st.success(f"Your license key: **{trial_key}**")
+                            st.info("Copy this key and use it to log in below. You have 1 free build and 7 days!")
+                        elif resp.status_code == 409:
+                            detail = resp.json().get("detail", "Email already registered.")
+                            st.warning(detail)
+                        else:
+                            try:
+                                detail = resp.json().get("detail", "Could not create trial.")
+                            except Exception:
+                                detail = "Could not create trial."
+                            st.error(detail)
+                except Exception as e:
+                    st.error(f"Service unavailable: {e}")
+
+    # ── LOGIN ──
     st.markdown("---")
     st.markdown("""
         <div style='text-align:center; margin-bottom:12px;'>
@@ -415,20 +485,26 @@ if not st.session_state.logged_in:
     """, unsafe_allow_html=True)
     st.stop()
 
-# ── Show forge header only for logged-in users ──
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGGED-IN APP (everything below requires authentication)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Show forge header ──
 st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
 
-# ── WARM UP AI SERVICE (prevents first-click timeout on cold starts) ──
-if "services_warmed" not in st.session_state:
+# ── Warm up AI service on first logged-in page load ──
+if not st.session_state.services_warmed:
     try:
         httpx.get(f"{AI_URL}/health", timeout=5.0)
     except Exception:
-        pass  # Non-critical — if it fails, the forge will wake it up
+        pass
     st.session_state.services_warmed = True
 
-# ─────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     if os.path.exists("aoc3po_logo.png"):
         st.image("aoc3po_logo.png", width=200)
@@ -451,16 +527,16 @@ with st.sidebar:
     st.markdown("---")
 
     # Nav buttons
-    if st.button("⚙️  FORGE BLUEPRINT",    use_container_width=True):
+    if st.button("⚙️  FORGE BLUEPRINT",   use_container_width=True):
         st.session_state.active_tab = "forge"
-    if st.button("🗄️  CONCEPTION VAULT",   use_container_width=True):
+    if st.button("🗄️  CONCEPTION VAULT",  use_container_width=True):
         st.session_state.active_tab = "vault"
-        st.session_state.vault_data = None  # force refresh
-    if st.button("🔬  EQUIPMENT SCANNER",  use_container_width=True):
+        st.session_state.vault_data = None
+    if st.button("🔬  EQUIPMENT SCANNER", use_container_width=True):
         st.session_state.active_tab = "scanner"
-    if st.button("🧠  CONCEPTION DNA",     use_container_width=True):
+    if st.button("🧠  CONCEPTION DNA",    use_container_width=True):
         st.session_state.active_tab = "conception"
-    if st.button("💬  ARENA CHAT",         use_container_width=True):
+    if st.button("💬  ARENA CHAT",        use_container_width=True):
         st.session_state.active_tab = "chat"
 
     st.markdown("---")
@@ -485,7 +561,18 @@ with st.sidebar:
         """, unsafe_allow_html=True)
         if pct >= 1.0:
             st.error("Quota exhausted.")
-            if st.session_state.tier == "starter":
+            if st.session_state.tier == "trial":
+                st.markdown("""
+                    <div style='background:#1E293B; padding:12px; border-radius:6px;
+                                border:1px solid #10B981; text-align:center; margin:8px 0;'>
+                      <div style='color:#10B981; font-size:12px; font-weight:bold;'>
+                        Your free build is used!</div>
+                      <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
+                        Upgrade to keep forging blueprints</div>
+                    </div>
+                """, unsafe_allow_html=True)
+                st.link_button("⚡ GET STARTER $9.99/mo", STRIPE_STARTER, use_container_width=True)
+            elif st.session_state.tier == "starter":
                 st.link_button("UPGRADE TO PRO", STRIPE_PRO, use_container_width=True)
             elif st.session_state.tier == "pro":
                 st.link_button("UPGRADE TO MASTER", STRIPE_MASTER, use_container_width=True)
@@ -494,19 +581,21 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🛠️ MAINTENANCE FUND")
-    st.markdown(f"<a href='{STRIPE_STARTER}' target='_blank' style='color:#FF4500;'>☕ TIP THE TECH CUP</a>",
-                unsafe_allow_html=True)
+    st.markdown(
+        f"<a href='{STRIPE_STARTER}' target='_blank' style='color:#FF4500;'>☕ TIP THE TECH CUP</a>",
+        unsafe_allow_html=True
+    )
     st.markdown("---")
 
     if st.button("LOGOUT", use_container_width=True):
-        for k in ["logged_in","user_email","user_name","tier","jwt_token","active_task","vault_data"]:
-            st.session_state[k] = "" if k != "logged_in" else False
+        for k, v in _defaults.items():
+            st.session_state[k] = v
         st.rerun()
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: FORGE BLUEPRINT
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.active_tab == "forge":
     st.markdown("### 🛡️ ACTIVE ENGINEERING AGENTS")
     cols = st.columns(3)
@@ -519,7 +608,7 @@ if st.session_state.active_tab == "forge":
         st.caption("SYSTEMS ARCHITECTURE / EMBEDDED LOGIC")
         st.status("READY", state="complete")
     with cols[2]:
-        st.markdown("#### 🟢 GEMINI 2.0")
+        st.markdown("#### 🟢 GEMINI 2.5 FLASH")
         st.caption("SYNTHESIS ENGINE / CONCEPTION VAULT")
         st.status("READY", state="complete")
 
@@ -527,27 +616,40 @@ if st.session_state.active_tab == "forge":
     col_left, col_right = st.columns([2, 1])
 
     with col_left:
-        project_name   = st.text_input("PROJECT IDENTIFIER",
-                                       placeholder="e.g., Heavy-Duty Hydraulic Submersible Arm")
-        inventory_input = st.text_area("INVENTORY MANIFEST / JUNK DESCRIPTION",
-                                       placeholder="List every motor, sensor, and scrap metal piece...",
-                                       height=260)
+        project_name = st.text_input(
+            "PROJECT IDENTIFIER",
+            placeholder="e.g., Hydraulic Log Splitter, Cat Litter Robot, Go-Kart",
+            max_chars=200
+        )
+        inventory_input = st.text_area(
+            "INVENTORY MANIFEST / JUNK DESCRIPTION",
+            placeholder="List every item you have — motors, machines, scrap metal, electronics...",
+            height=260,
+            max_chars=5000
+        )
+
     with col_right:
         st.markdown("### BUILD PARAMETERS")
-        detail_level = st.select_slider("SPECIFICATION DEPTH",
-                                        options=["Standard", "Industrial", "Experimental"])
+        detail_level = st.select_slider(
+            "SPECIFICATION DEPTH",
+            options=["Standard", "Industrial", "Experimental"]
+        )
         st.markdown("&nbsp;")
         forge = st.button("🚀 FORGE BLUEPRINT", use_container_width=True)
 
         if forge:
-            if not project_name or not inventory_input:
-                st.error("Project identifier and inventory manifest are required.")
+            if not project_name or not project_name.strip():
+                st.error("Project identifier is required.")
+            elif not inventory_input or not inventory_input.strip():
+                st.error("Inventory manifest is required.")
+            elif len(inventory_input.strip()) < 10:
+                st.error("Describe your inventory in more detail (at least a few items).")
             else:
                 try:
                     with st.spinner("Initiating Round Table protocols..."):
                         payload = {
-                            "junk_desc":   inventory_input,
-                            "project_type": project_name,
+                            "junk_desc":    inventory_input.strip(),
+                            "project_type": project_name.strip(),
                             "detail_level": detail_level,
                             "user_email":   st.session_state.user_email,
                         }
@@ -561,10 +663,21 @@ if st.session_state.active_tab == "forge":
                         elif resp.status_code == 402:
                             st.error("Build quota exceeded. Upgrade your license.")
                         elif resp.status_code == 403:
-                            detail = resp.json().get("detail", "Request blocked.")
+                            try:
+                                detail = resp.json().get("detail", "Request blocked.")
+                            except Exception:
+                                detail = "Request blocked by safety filter."
                             st.error(f"🛡️ {detail}")
+                        elif resp.status_code == 400:
+                            try:
+                                detail = resp.json().get("detail", "Invalid input.")
+                            except Exception:
+                                detail = "Invalid input."
+                            st.warning(f"⚠️ {detail}")
                         else:
-                            st.error(f"Forge refused: {resp.text}")
+                            st.error(f"Forge refused: HTTP {resp.status_code}")
+                except httpx.TimeoutException:
+                    st.warning("Service is waking up. Please try again in a few seconds.")
                 except Exception as e:
                     st.error(f"Connection failure: {e}")
 
@@ -574,8 +687,10 @@ if st.session_state.active_tab == "forge":
         st.markdown("### 🏗️ CURRENT BUILD LOG")
         task_id = st.session_state.active_task
         try:
-            sr = httpx.get(f"{AI_URL}/generate/status/{task_id}",
-                           headers=_h(), timeout=15.0)
+            sr = httpx.get(
+                f"{AI_URL}/generate/status/{task_id}",
+                headers=_h(), timeout=15.0
+            )
             if sr.status_code == 200:
                 data  = sr.json()
                 state = data.get("status")
@@ -583,20 +698,18 @@ if st.session_state.active_tab == "forge":
                 if state == "complete":
                     st.balloons()
                     st.markdown("#### ✅ SYNTHESIS COMPLETE")
-                    blueprint = data.get("result", {}).get("content", "")
-                    build_id  = data.get("result", {}).get("build_id", "")
-                    schematic = data.get("result", {}).get("schematic_svg", "")
 
-                    # Display schematic drawing if available
+                    result    = data.get("result", {})
+                    blueprint = result.get("content", "")
+                    build_id  = result.get("build_id", "")
+                    schematic = result.get("schematic_svg", "")
+
+                    # ── Display schematic as base64 image ──
                     if schematic and "<svg" in schematic and "</svg>" in schematic:
-                        import base64
-                        # Sanitize: extract only the SVG portion
                         svg_start = schematic.find("<svg")
-                        svg_end = schematic.rfind("</svg>") + 6
+                        svg_end   = schematic.rfind("</svg>") + 6
                         clean_svg = schematic[svg_start:svg_end]
-
-                        # Encode as base64 img — Streamlit strips raw SVG but renders img tags
-                        svg_b64 = base64.b64encode(clean_svg.encode("utf-8")).decode("utf-8")
+                        svg_b64   = base64.b64encode(clean_svg.encode("utf-8")).decode("utf-8")
 
                         st.markdown("#### 📐 TECHNICAL SCHEMATIC")
                         st.markdown(
@@ -617,8 +730,10 @@ if st.session_state.active_tab == "forge":
                         )
                         st.markdown("---")
 
+                    # ── Display blueprint text ──
                     st.markdown(blueprint)
 
+                    # ── Download buttons ──
                     if build_id:
                         col1, col2 = st.columns(2)
                         with col1:
@@ -627,13 +742,14 @@ if st.session_state.active_tab == "forge":
                                     f"{EXPORT_URL}/export/download/{build_id}?fmt=md",
                                     headers=_h(), timeout=10.0
                                 )
-                                st.download_button(
-                                    "📥 DOWNLOAD BLUEPRINT (.md)",
-                                    data=dl.content,
-                                    file_name=f"blueprint_{build_id}.md",
-                                    mime="text/markdown",
-                                    use_container_width=True
-                                )
+                                if dl.status_code == 200:
+                                    st.download_button(
+                                        "📥 DOWNLOAD BLUEPRINT (.md)",
+                                        data=dl.content,
+                                        file_name=f"blueprint_{build_id}.md",
+                                        mime="text/markdown",
+                                        use_container_width=True
+                                    )
                             except Exception:
                                 pass
                         with col2:
@@ -642,13 +758,14 @@ if st.session_state.active_tab == "forge":
                                     f"{EXPORT_URL}/export/download/{build_id}?fmt=txt",
                                     headers=_h(), timeout=10.0
                                 )
-                                st.download_button(
-                                    "📥 DOWNLOAD BLUEPRINT (.txt)",
-                                    data=dl.content,
-                                    file_name=f"blueprint_{build_id}.txt",
-                                    mime="text/plain",
-                                    use_container_width=True
-                                )
+                                if dl.status_code == 200:
+                                    st.download_button(
+                                        "📥 DOWNLOAD BLUEPRINT (.txt)",
+                                        data=dl.content,
+                                        file_name=f"blueprint_{build_id}.txt",
+                                        mime="text/plain",
+                                        use_container_width=True
+                                    )
                             except Exception:
                                 pass
 
@@ -656,9 +773,15 @@ if st.session_state.active_tab == "forge":
                     st.session_state.active_task = None
 
                 elif state == "failed":
-                    st.error("The Round Table failed to reach consensus. Check your manifest.")
+                    error_msg = data.get("error", "")
+                    if "TimeLimitExceeded" in error_msg:
+                        st.error("Blueprint timed out. Try Standard depth or a simpler project.")
+                    else:
+                        st.error("The Round Table failed to reach consensus. Check your manifest.")
                     st.session_state.active_task = None
+
                 else:
+                    # PROGRESS / PENDING / STARTED
                     msg = data.get("message", "Initializing Round Table protocols...")
                     st.markdown(f"""
                         <div style='background:#1E293B; padding:16px; border-radius:8px;
@@ -672,18 +795,22 @@ if st.session_state.active_tab == "forge":
                     """, unsafe_allow_html=True)
                     time.sleep(3)
                     st.rerun()
+
+        except httpx.TimeoutException:
+            st.warning("Polling timed out. The forge is still running — page will refresh.")
+            time.sleep(5)
+            st.rerun()
         except Exception as e:
             st.warning(f"Polling interrupted: {e}")
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: CONCEPTION VAULT
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "vault":
     st.markdown("### 🗄️ CONCEPTION DNA VAULT")
     st.caption("All blueprints archived for Conception's learning and your reference.")
 
-    # Load vault data
     if st.session_state.vault_data is None:
         with st.spinner("Loading your vault..."):
             try:
@@ -695,7 +822,7 @@ elif st.session_state.active_tab == "vault":
             except Exception:
                 st.session_state.vault_data = {}
 
-    vault = st.session_state.vault_data
+    vault  = st.session_state.vault_data
     builds = vault.get("builds", [])
 
     # Stats row
@@ -705,10 +832,10 @@ elif st.session_state.active_tab == "vault":
             headers=_h(), timeout=8.0
         ).json()
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Total Builds",      stats.get("total_builds", 0))
-        s2.metric("Tokens Consumed",   f"{stats.get('total_tokens', 0):,}")
-        s3.metric("Conception Ready",  stats.get("conception_ready", 0))
-        s4.metric("In Vault",          vault.get("count", 0))
+        s1.metric("Total Builds",     stats.get("total_builds", 0))
+        s2.metric("Tokens Consumed",  f"{stats.get('total_tokens', 0):,}")
+        s3.metric("Conception Ready", stats.get("conception_ready", 0))
+        s4.metric("In Vault",         vault.get("count", 0))
     except Exception:
         pass
 
@@ -717,7 +844,6 @@ elif st.session_state.active_tab == "vault":
     if not builds:
         st.info("No blueprints in your vault yet. Forge your first blueprint in the FORGE tab.")
     else:
-        # Search filter
         search = st.text_input("🔍 Search vault", placeholder="Filter by project name...")
 
         for b in builds:
@@ -755,14 +881,14 @@ elif st.session_state.active_tab == "vault":
                             f"{EXPORT_URL}/export/download/{bid}?fmt=md",
                             headers=_h(), timeout=10.0
                         )
-                        st.download_button(
-                            "📥 .md",
-                            data=dl.content,
-                            file_name=f"blueprint_{bid}.md",
-                            mime="text/markdown",
-                            key=f"dlmd_{bid}",
-                            use_container_width=True
-                        )
+                        if dl.status_code == 200:
+                            st.download_button(
+                                "📥 .md", data=dl.content,
+                                file_name=f"blueprint_{bid}.md",
+                                mime="text/markdown",
+                                key=f"dlmd_{bid}",
+                                use_container_width=True
+                            )
                     except Exception:
                         pass
 
@@ -772,21 +898,21 @@ elif st.session_state.active_tab == "vault":
                             f"{EXPORT_URL}/export/download/{bid}?fmt=txt",
                             headers=_h(), timeout=10.0
                         )
-                        st.download_button(
-                            "📥 .txt",
-                            data=dl.content,
-                            file_name=f"blueprint_{bid}.txt",
-                            mime="text/plain",
-                            key=f"dltxt_{bid}",
-                            use_container_width=True
-                        )
+                        if dl.status_code == 200:
+                            st.download_button(
+                                "📥 .txt", data=dl.content,
+                                file_name=f"blueprint_{bid}.txt",
+                                mime="text/plain",
+                                key=f"dltxt_{bid}",
+                                use_container_width=True
+                            )
                     except Exception:
                         pass
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: EQUIPMENT SCANNER
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "scanner":
     st.markdown("### 🔬 EQUIPMENT SCANNER")
     st.caption("Upload a photo of any hardware. Gemini Vision identifies every component.")
@@ -800,7 +926,6 @@ elif st.session_state.active_tab == "scanner":
             if not uploaded:
                 st.error("Upload an image first.")
             else:
-                import base64
                 b64 = base64.b64encode(uploaded.read()).decode("utf-8")
                 mime = uploaded.type or "image/jpeg"
                 data_url = f"data:{mime};base64,{b64}"
@@ -817,41 +942,46 @@ elif st.session_state.active_tab == "scanner":
                             headers=_h(), timeout=15.0
                         )
                         if resp.status_code == 200:
-                            st.session_state["scan_task"] = resp.json().get("task_id")
+                            st.session_state.scan_task = resp.json().get("task_id")
+                            st.rerun()
                         else:
                             st.error(f"Scanner refused: {resp.text}")
                 except Exception as e:
                     st.error(f"Scanner offline: {e}")
 
     with col_right:
-        if "scan_task" in st.session_state and st.session_state["scan_task"]:
-            task_id = st.session_state["scan_task"]
-            with st.spinner("Gemini Vision analyzing..."):
-                for _ in range(30):
-                    try:
-                        sr = httpx.get(
-                            f"{WORKSHOP_URL}/task/status/{task_id}",
-                            headers=_h(), timeout=10.0
-                        ).json()
-                        if sr.get("status") == "complete":
-                            result = sr.get("result", {}).get("scan_result", {})
-                            ident  = result.get("identification", {})
-                            comps  = result.get("components", [])
+        if st.session_state.scan_task:
+            task_id = st.session_state.scan_task
+            try:
+                sr = httpx.get(
+                    f"{WORKSHOP_URL}/task/status/{task_id}",
+                    headers=_h(), timeout=10.0
+                ).json()
 
-                            st.success(f"**{ident.get('equipment_name', 'Unknown Equipment')}**")
-                            st.markdown("#### Identified Components")
-                            for c in comps:
-                                st.markdown(f"- **{c.get('name', '?')}** × {c.get('quantity', '?')}")
+                if sr.get("status") == "complete":
+                    result = sr.get("result", {}).get("scan_result", {})
+                    ident  = result.get("identification", {})
+                    comps  = result.get("components", [])
 
-                            st.session_state["scan_task"] = None
-                            break
-                        elif sr.get("status") == "failed":
-                            st.error("Scan failed. Try another image.")
-                            st.session_state["scan_task"] = None
-                            break
-                        time.sleep(2)
-                    except Exception:
-                        time.sleep(2)
+                    st.success(f"**{ident.get('equipment_name', 'Unknown Equipment')}**")
+                    st.markdown("#### Identified Components")
+                    for c in comps:
+                        st.markdown(f"- **{c.get('name', '?')}** × {c.get('quantity', '?')}")
+                    st.session_state.scan_task = None
+
+                elif sr.get("status") == "failed":
+                    st.error("Scan failed. Try another image.")
+                    st.session_state.scan_task = None
+
+                else:
+                    st.info("Gemini Vision analyzing... please wait.")
+                    time.sleep(3)
+                    st.rerun()
+
+            except Exception:
+                st.info("Waiting for scan result...")
+                time.sleep(3)
+                st.rerun()
 
     # Scan history
     st.markdown("---")
@@ -862,17 +992,19 @@ elif st.session_state.active_tab == "scanner":
             headers=_h(), timeout=8.0
         ).json().get("scans", [])
         for s in scans[:10]:
-            with st.expander(f"🔩 {s.get('equipment_name','Unknown')} — {str(s.get('created_at',''))[:10]}"):
+            with st.expander(
+                f"🔩 {s.get('equipment_name', 'Unknown')} — {str(s.get('created_at', ''))[:10]}"
+            ):
                 result = s.get("scan_result", {})
                 for comp in result.get("components", []):
-                    st.markdown(f"- {comp.get('name','?')} × {comp.get('quantity','?')}")
+                    st.markdown(f"- {comp.get('name', '?')} × {comp.get('quantity', '?')}")
     except Exception:
         st.caption("Scan history unavailable.")
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: CONCEPTION DNA
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "conception":
     st.markdown("### 🧠 CONCEPTION DNA — LEARNING CORE")
     st.caption(
@@ -886,10 +1018,10 @@ elif st.session_state.active_tab == "conception":
             headers=_h(), timeout=8.0
         ).json()
 
-        total   = stats.get("total_builds", 0)
-        tokens  = stats.get("total_tokens", 0)
-        ready   = stats.get("conception_ready", 0)
-        pct     = round((ready / max(total, 1)) * 100, 1)
+        total  = stats.get("total_builds", 0)
+        tokens = stats.get("total_tokens", 0)
+        ready  = stats.get("conception_ready", 0)
+        pct    = round((ready / max(total, 1)) * 100, 1)
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Blueprints Absorbed", total)
@@ -900,11 +1032,13 @@ elif st.session_state.active_tab == "conception":
 
         # DNA progress bar
         st.markdown("#### CONCEPTION KNOWLEDGE INDEX")
-        knowledge_pct = min(total / 500, 1.0)  # 500 blueprints = full knowledge base
-        st.progress(knowledge_pct,
-                    text=f"{total} / 500 blueprints — {knowledge_pct*100:.1f}% knowledge saturation")
+        knowledge_pct = min(total / 500, 1.0)
+        st.progress(
+            knowledge_pct,
+            text=f"{total} / 500 blueprints — {knowledge_pct*100:.1f}% knowledge saturation"
+        )
 
-        # Top project types Conception has learned
+        # Top project types
         st.markdown("#### TOP ENGINEERING DOMAINS LEARNED")
         top = stats.get("top_projects", [])
         if top:
@@ -935,20 +1069,19 @@ elif st.session_state.active_tab == "conception":
         milestones = [10, 50, 100, 200, 500]
         next_m = next((m for m in milestones if m > total), 500)
         needed = next_m - total
-        st.info(f"**{needed} more blueprints** until the next Conception evolution milestone ({next_m} total).")
+        st.info(f"**{needed} more blueprints** until the next evolution milestone ({next_m} total).")
 
     except Exception as e:
         st.error(f"Could not load Conception data: {e}")
 
 
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: ARENA CHAT
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_tab == "chat":
     st.markdown("### 💬 FOUNDRY ARENA CHAT")
     st.caption("Live global channel. All operators. All tiers.")
 
-    # Send message
     with st.form("chat_form", clear_on_submit=True):
         msg_text = st.text_input("Message", placeholder="Speak, operator...")
         sent = st.form_submit_button("TRANSMIT", use_container_width=True)
@@ -966,7 +1099,6 @@ elif st.session_state.active_tab == "chat":
             except Exception:
                 pass
 
-    # Display messages
     try:
         messages = httpx.get(
             f"{AI_URL}/arena/chat/recent",
@@ -977,7 +1109,7 @@ elif st.session_state.active_tab == "chat":
         for m in messages:
             badge = tier_badge.get(m.get("tier", ""), "⚪")
             st.markdown(
-                f"`{m.get('time','')}` {badge} **{m.get('user','?')}** — {m.get('text','')}",
+                f"`{m.get('time', '')}` {badge} **{m.get('user', '?')}** — {m.get('text', '')}",
                 unsafe_allow_html=False
             )
     except Exception:
@@ -986,6 +1118,7 @@ elif st.session_state.active_tab == "chat":
     if st.button("🔄 REFRESH", use_container_width=True):
         st.rerun()
 
-# ── FOOTER ──
+
+# ── FOOTER ─────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.caption("AoC3P0 Systems | The Builder Foundry | Conception DNA Architecture")
