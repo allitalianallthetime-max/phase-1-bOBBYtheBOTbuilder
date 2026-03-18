@@ -11,8 +11,16 @@ import streamlit as st
 import os
 import base64
 import time
+import html
 from dotenv import load_dotenv
 from app_helpers import api_get, api_post, api_get_raw, ping_service, APIError
+
+try:
+    from PIL import Image
+    import io as _io
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 try:
     from builder_styles import BUILDER_CSS, FORGE_HEADER_HTML
@@ -47,11 +55,18 @@ _defaults = {
     "logged_in": False, "user_email": "", "user_name": "", "tier": "",
     "jwt_token": "", "active_task": None, "vault_data": None,
     "active_tab": "forge", "scan_task": None, "scan_attempts": 0,
-    "landing_warmed": False, "services_warmed": False,
+    "forge_attempts": 0, "landing_warmed": False, "services_warmed": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+
+# ── CACHED DOWNLOADS (prevents self-DDoS on vault page reruns) ────────────────
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_download(url: str):
+    """Cache file downloads so vault page reruns don't spam the API."""
+    return api_get_raw(url)
 
 
 # ── REUSABLE UI HELPERS ───────────────────────────────────────────────────────
@@ -60,7 +75,7 @@ def _download_buttons(build_id: str, key_suffix: str = ""):
     """Render .md and .txt download buttons for a build."""
     col1, col2 = st.columns(2)
     with col1:
-        data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{build_id}?fmt=md")
+        data, ok = _cached_download(f"{EXPORT_URL}/export/download/{build_id}?fmt=md")
         if ok:
             st.download_button(
                 "📥 DOWNLOAD (.md)", data=data,
@@ -68,7 +83,7 @@ def _download_buttons(build_id: str, key_suffix: str = ""):
                 key=f"dlmd_{build_id}{key_suffix}", use_container_width=True
             )
     with col2:
-        data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{build_id}?fmt=txt")
+        data, ok = _cached_download(f"{EXPORT_URL}/export/download/{build_id}?fmt=txt")
         if ok:
             st.download_button(
                 "📥 DOWNLOAD (.txt)", data=data,
@@ -521,15 +536,18 @@ with st.sidebar:
     st.markdown("---")
     tier_colors = {"master": "#FFD700", "pro": "#FF4500", "starter": "#94A3B8", "trial": "#10B981"}
     tc = tier_colors.get(st.session_state.tier, "#94A3B8")
+    safe_name  = html.escape(st.session_state.user_name or "Unknown")
+    safe_email = html.escape(st.session_state.user_email or "")
+    safe_tier  = html.escape(st.session_state.tier.upper() if st.session_state.tier else "")
     st.markdown(f"""
         <div style='background:#1E293B; padding:12px; border-radius:6px;
                     border-left:4px solid {tc};'>
           <div style='color:#94A3B8; font-size:12px;'>OPERATOR</div>
-          <div style='color:white; font-weight:bold;'>{st.session_state.user_name or "Unknown"}</div>
+          <div style='color:white; font-weight:bold;'>{safe_name}</div>
           <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
-            {st.session_state.user_email}</div>
+            {safe_email}</div>
           <div style='color:{tc}; font-size:11px; font-weight:bold; margin-top:4px;'>
-            {st.session_state.tier.upper()} CLEARANCE</div>
+            {safe_tier} CLEARANCE</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -656,61 +674,74 @@ if st.session_state.active_tab == "forge":
                             st.error(result.detail)
                     else:
                         st.session_state.active_task = result.get("task_id")
+                        st.session_state.forge_attempts = 0
                         st.success("Agents deployed. Blueprint forging...")
 
     # ── TASK POLLING ──
     if st.session_state.active_task:
-        st.markdown("---")
-        st.markdown("### CURRENT BUILD LOG")
-        task_id = st.session_state.active_task
+        max_forge_attempts = 40  # 40 x 3s = 2 minutes max
 
-        result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
-
-        if isinstance(result, APIError):
-            st.warning(f"Polling interrupted: {result.detail}")
-            time.sleep(5)
-            st.rerun()
+        if st.session_state.forge_attempts >= max_forge_attempts:
+            st.error("Forge timed out. The server may be under heavy load. Try again.")
+            st.session_state.active_task = None
+            st.session_state.forge_attempts = 0
         else:
-            state = result.get("status")
+            st.markdown("---")
+            st.markdown("### CURRENT BUILD LOG")
+            task_id = st.session_state.active_task
 
-            if state == "complete":
-                st.balloons()
-                st.markdown("#### SYNTHESIS COMPLETE")
+            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
 
-                res       = result.get("result", {})
-                blueprint = res.get("content", "")
-                build_id  = res.get("build_id", "")
-                schematic = res.get("schematic_svg", "")
-
-                _show_schematic(schematic, build_id)
-                st.markdown(blueprint)
-                if build_id:
-                    _download_buttons(build_id)
-                st.info("Blueprint archived in Conception DNA Vault.")
-                st.session_state.active_task = None
-
-            elif state == "failed":
-                error_msg = result.get("error", "")
-                if "TimeLimitExceeded" in error_msg:
-                    st.error("Blueprint timed out. Try Standard depth or a simpler project.")
-                else:
-                    st.error("The Round Table failed to reach consensus. Check your manifest.")
-                st.session_state.active_task = None
-
-            else:
-                msg = result.get("message", "Initializing Round Table protocols...")
-                st.markdown(f"""
-                    <div style='background:#1E293B; padding:16px; border-radius:8px;
-                                border-left:4px solid #FF4500; margin:8px 0;'>
-                      <div style='color:#FF4500; font-size:13px; font-weight:bold;
-                                  font-family:monospace; letter-spacing:1px;'>
-                        ROUND TABLE ACTIVE</div>
-                      <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
-                        {msg}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-                time.sleep(3)
+            if isinstance(result, APIError):
+                st.warning(f"Polling interrupted: {result.detail}")
+                st.session_state.forge_attempts += 1
+                time.sleep(5)
                 st.rerun()
+            else:
+                state = result.get("status")
+
+                if state == "complete":
+                    st.balloons()
+                    st.markdown("#### SYNTHESIS COMPLETE")
+
+                    res       = result.get("result", {})
+                    blueprint = res.get("content", "")
+                    build_id  = res.get("build_id", "")
+                    schematic = res.get("schematic_svg", "")
+
+                    _show_schematic(schematic, build_id)
+                    st.markdown(blueprint)
+                    if build_id:
+                        _download_buttons(build_id)
+                    st.info("Blueprint archived in Conception DNA Vault.")
+                    st.session_state.active_task = None
+                    st.session_state.forge_attempts = 0
+
+                elif state == "failed":
+                    error_msg = result.get("error", "")
+                    if "TimeLimitExceeded" in error_msg:
+                        st.error("Blueprint timed out. Try Standard depth or a simpler project.")
+                    else:
+                        st.error("The Round Table failed to reach consensus. Check your manifest.")
+                    st.session_state.active_task = None
+                    st.session_state.forge_attempts = 0
+
+                else:
+                    msg = result.get("message", "Initializing Round Table protocols...")
+                    elapsed = st.session_state.forge_attempts * 3
+                    st.markdown(f"""
+                        <div style='background:#1E293B; padding:16px; border-radius:8px;
+                                    border-left:4px solid #FF4500; margin:8px 0;'>
+                          <div style='color:#FF4500; font-size:13px; font-weight:bold;
+                                      font-family:monospace; letter-spacing:1px;'>
+                            ROUND TABLE ACTIVE ({elapsed}s)</div>
+                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
+                            {html.escape(msg)}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    st.session_state.forge_attempts += 1
+                    time.sleep(3)
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -767,14 +798,14 @@ elif st.session_state.active_tab == "vault":
                         else:
                             st.error(f"Failed to load: {full.detail}")
                 with col2:
-                    data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{bid}?fmt=md")
+                    data, ok = _cached_download(f"{EXPORT_URL}/export/download/{bid}?fmt=md")
                     if ok:
                         st.download_button("📥 .md", data=data,
                                           file_name=f"blueprint_{bid}.md",
                                           mime="text/markdown", key=f"dlmd_{bid}",
                                           use_container_width=True)
                 with col3:
-                    data, ok = api_get_raw(f"{EXPORT_URL}/export/download/{bid}?fmt=txt")
+                    data, ok = _cached_download(f"{EXPORT_URL}/export/download/{bid}?fmt=txt")
                     if ok:
                         st.download_button("📥 .txt", data=data,
                                           file_name=f"blueprint_{bid}.txt",
@@ -798,9 +829,23 @@ elif st.session_state.active_tab == "scanner":
             if not uploaded:
                 st.error("Upload an image first.")
             else:
-                b64 = base64.b64encode(uploaded.read()).decode("utf-8")
-                mime = uploaded.type or "image/jpeg"
-                data_url = f"data:{mime};base64,{b64}"
+                with st.spinner("Compressing image for analysis..."):
+                    # Compress image before sending — prevents 15MB iPhone photos
+                    # from crashing the backend with 413 Payload Too Large
+                    if _PIL_AVAILABLE:
+                        img = Image.open(uploaded)
+                        if img.mode in ("RGBA", "P"):
+                            img = img.convert("RGB")
+                        img.thumbnail((1024, 1024))
+                        buf = _io.BytesIO()
+                        img.save(buf, format="JPEG", quality=85)
+                        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                        data_url = f"data:image/jpeg;base64,{b64}"
+                    else:
+                        # PIL not available — send raw (less safe but functional)
+                        b64 = base64.b64encode(uploaded.read()).decode("utf-8")
+                        mime = uploaded.type or "image/jpeg"
+                        data_url = f"data:{mime};base64,{b64}"
 
                 with st.spinner("Running computer vision analysis..."):
                     result = api_post(f"{WORKSHOP_URL}/scan/base64", {
