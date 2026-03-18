@@ -132,6 +132,7 @@ class CreateReq(BaseModel):
 
 class TrialReq(BaseModel):
     email: str
+    email_optin: bool = False
 
 
 # ── ENDPOINTS ──────────────────────────────────────────────────────────────
@@ -182,7 +183,8 @@ def create_trial(req: TrialReq, _=Depends(verify_int)):
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (key, email, "", "", "trial", exp, "Free trial — 1 build"),
+                (key, email, "", "", "trial", exp,
+                 f"Free trial — 1 build | email_optin={req.email_optin}"),
             )
             conn.commit()
 
