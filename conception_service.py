@@ -46,6 +46,12 @@ init_marketing_db()
 app.include_router(marketing_router)
 log.info("Marketing router loaded: /marketing/*")
 
+# Admin dashboard
+from conception_dashboard import router as dashboard_router, set_pool as dashboard_set_pool
+dashboard_set_pool(pool)
+app.include_router(dashboard_router)
+log.info("Dashboard router loaded: /dashboard")
+
 # Future routers go here:
 # from conception_briefing_router import router as briefing_router, set_pool as briefing_set_pool
 # briefing_set_pool(pool)
@@ -75,7 +81,7 @@ def health():
         "status": "ok",
         "service": "conception",
         "database": db_status,
-        "modules": ["marketing"],
+        "modules": ["marketing", "dashboard"],
     }
 
 
@@ -86,6 +92,7 @@ def root():
         "version": "1.0.0",
         "modules": {
             "marketing": "/marketing/daily-tasks, /marketing/generate, /marketing/log, /marketing/stats, /marketing/ideas, /marketing/schedule",
+            "dashboard": "/dashboard (browser) or /dashboard/data (JSON)",
         },
         "status": "online",
     }
