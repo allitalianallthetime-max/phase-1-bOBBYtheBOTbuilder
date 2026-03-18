@@ -659,23 +659,35 @@ if st.session_state.active_tab == "forge":
             elif len(inventory_input.strip()) < 10:
                 st.error("Describe your inventory in more detail.")
             else:
-                with st.spinner("Initiating Round Table protocols..."):
-                    result = api_post(f"{AI_URL}/generate", {
-                        "junk_desc":    inventory_input.strip(),
-                        "project_type": project_name.strip(),
-                        "detail_level": detail_level,
-                        "user_email":   st.session_state.user_email,
-                    }, timeout=60.0)
+                with st.spinner("Waking AI agents..."):
+                    # Wake AI service if sleeping (Render cold-start)
+                    awake = ping_service(f"{AI_URL}/health", timeout=10.0)
+                    if not awake:
+                        # Give it a second try — Render needs ~5-10s to wake
+                        import time as _t
+                        _t.sleep(3)
+                        awake = ping_service(f"{AI_URL}/health", timeout=15.0)
 
-                    if isinstance(result, APIError):
-                        if result.status == 429:
-                            st.warning("Too many forge requests. Wait a few minutes.")
+                if not awake:
+                    st.warning("AI service is starting up. Click FORGE again in 10 seconds.")
+                else:
+                    with st.spinner("Initiating Round Table protocols..."):
+                        result = api_post(f"{AI_URL}/generate", {
+                            "junk_desc":    inventory_input.strip(),
+                            "project_type": project_name.strip(),
+                            "detail_level": detail_level,
+                            "user_email":   st.session_state.user_email,
+                        }, timeout=60.0)
+
+                        if isinstance(result, APIError):
+                            if result.status == 429:
+                                st.warning("Too many forge requests. Wait a few minutes.")
+                            else:
+                                st.error(result.detail)
                         else:
-                            st.error(result.detail)
-                    else:
-                        st.session_state.active_task = result.get("task_id")
-                        st.session_state.forge_attempts = 0
-                        st.success("Agents deployed. Blueprint forging...")
+                            st.session_state.active_task = result.get("task_id")
+                            st.session_state.forge_attempts = 0
+                            st.success("Agents deployed. Blueprint forging...")
 
     # ── TASK POLLING ──
     if st.session_state.active_task:
