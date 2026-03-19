@@ -1,37 +1,90 @@
 """Agent: Grok 4.2 — Structured JSON diagnostic/analysis."""
 import json
+import uuid
 import httpx
 from prompts import mechanic_grok_system, quote_check_grok_system
 from worker_config import (
-    GROK_KEY, GROK_MODEL, log, log_event, truncate,
-    estimate_tokens, retry_async,
+    GROK_KEY, GROK_MODEL, GROK_TEMPERATURE, log, log_event,
+    truncate, estimate_tokens, retry_async,
 )
 
 
+# ── Token Budget ──────────────────────────────────────────────────────────────
+
 def _token_budget_check(texts, max_tokens, label):
-    total = sum(len(t)//4 for t in texts)
+    """Proportional truncation with safety margin and logging."""
+    total = sum(estimate_tokens(t) for t in texts)
     if total <= max_tokens:
         return texts
-    ratio = max_tokens / max(total, 1)
-    return [truncate(t, int(len(t) * ratio * 0.9)) for t in texts]
+    safety_ratio = 0.85
+    ratio = (max_tokens / max(total, 1)) * safety_ratio
+    log_event("token_budget_truncated", label=label,
+              estimated=total, budget=max_tokens, ratio=round(ratio, 3))
+    return [truncate(t, int(len(t) * ratio)) for t in texts]
 
 
-def grok_failed(analysis) -> bool:
-    """Detect if Grok returned garbage. Works for both JSON dict and string."""
+# ── JSON Extraction ───────────────────────────────────────────────────────────
+
+def safe_json_extract(content):
+    """Multi-strategy JSON extraction from Grok response."""
+    content = content.strip()
+
+    # Strategy 1: Direct parse
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: Strip markdown fences
+    for prefix in ["```json", "```"]:
+        if content.startswith(prefix):
+            content = content[len(prefix):].strip()
+            break
+    if content.endswith("```"):
+        content = content[:-3].strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 3: Find largest JSON object in string
+    try:
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start != -1 and end > start:
+            return json.loads(content[start:end])
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 4: Return raw text
+    log_event("grok_json_fallback", reason="could not parse JSON after all strategies")
+    return content
+
+
+# ── Failure Detection ─────────────────────────────────────────────────────────
+
+def grok_failed(analysis):
+    """Detect if Grok returned garbage. Works for dict and string."""
     if isinstance(analysis, dict):
-        return len(analysis.get("components", [])) == 0
+        # Blueprint mode has components, mechanic mode has diagnosis
+        has_components = len(analysis.get("components", [])) > 0
+        has_diagnosis = bool(analysis.get("diagnosis"))
+        return not has_components and not has_diagnosis
     if isinstance(analysis, str):
         if len(analysis) < 50:
             return True
-        markers = ["offline", "unavailable", "error", "timed out", "unexpected"]
+        markers = ["offline", "unavailable", "error", "timed out", "unexpected", "sorry"]
         return any(m in analysis.lower() for m in markers)
     return True
 
 
+# ── Core Runner ───────────────────────────────────────────────────────────────
 
-async def run_grok_inner(junk_desc: str, project_type: str,
-                          detail_level: str, conception_context: str,
-                          mode: str = "blueprint") -> dict:
+async def run_grok_inner(junk_desc, project_type, detail_level,
+                         conception_context, mode="blueprint"):
+    request_id = str(uuid.uuid4())[:8]
+    log_event("grok_call_start", request_id=request_id, mode=mode, detail=detail_level)
+
     if not GROK_KEY:
         return {"analysis": {"components": [], "feasibility_score": 0,
                 "analysis_summary": "Grok offline."}, "tokens": 0}
@@ -75,6 +128,8 @@ async def run_grok_inner(junk_desc: str, project_type: str,
             f"- Mark specs as [KNOWN] or [EST]\n\n"
             f"CREATIVE ENGINEERING: suggest UNEXPECTED uses for each component. "
             f"Think about what makes each item UNIQUE.\n\n"
+            f"DESIGN ORIGINALITY RULE: You MUST generate original, creative engineering designs. "
+            f"NEVER copy, replicate, or closely imitate any existing commercial product.\n\n"
             f"Detail level: {detail_level}. {detail_instructions.get(detail_level, '')}\n\n"
             f"Return ONLY valid JSON with this exact structure:\n"
             f'{{\n'
@@ -107,23 +162,23 @@ async def run_grok_inner(junk_desc: str, project_type: str,
             f"Analyze every item. Return ONLY the JSON structure."
         )
 
-    # Token budget check
-    texts = [system, user_msg]
-    texts = _token_budget_check(texts, max_toks.get(detail_level, 2000) * 2, "grok_input")
+    texts = _token_budget_check([system, user_msg],
+                                max_toks.get(detail_level, 2000) * 2, "grok_input")
 
     try:
         async with httpx.AsyncClient(timeout=timeouts.get(detail_level, 40.0)) as client:
             resp = await client.post(
                 "https://api.x.ai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROK_KEY}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {GROK_KEY}",
+                         "Content-Type": "application/json"},
                 json={
-                    "model": "grok-4.20-beta-0309-reasoning",
+                    "model": GROK_MODEL,
                     "messages": [
                         {"role": "system", "content": texts[0]},
                         {"role": "user", "content": texts[1]},
                     ],
                     "max_tokens": max_toks.get(detail_level, 2000),
-                    "temperature": 0.3,
+                    "temperature": GROK_TEMPERATURE,
                 },
             )
 
@@ -135,46 +190,43 @@ async def run_grok_inner(junk_desc: str, project_type: str,
                 return {"analysis": "Grok returned unexpected format.", "tokens": 0}
 
             tokens = d.get("usage", {}).get("total_tokens", 0)
+            analysis = safe_json_extract(content)
 
-            # Try to parse as JSON
-            try:
-                clean = content.strip()
-                if clean.startswith("```"):
-                    clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
-                if clean.endswith("```"):
-                    clean = clean[:-3].strip()
-                parsed = json.loads(clean)
-                return {"analysis": parsed, "tokens": tokens}
-            except json.JSONDecodeError:
-                # Grok didn't return valid JSON — fall back to raw text
-                log_event("grok_json_fallback", reason="invalid JSON from Grok")
-                return {"analysis": content, "tokens": tokens}
+            log_event("grok_call_success", request_id=request_id,
+                      tokens=tokens, parsed_as_dict=isinstance(analysis, dict))
+            return {"analysis": analysis, "tokens": tokens}
 
-        # Any non-200 raises so the retry wrapper can handle it
-        raise Exception(f"Grok API returned HTTP {resp.status_code}")
+        raise Exception(f"Grok HTTP {resp.status_code}")
 
     except httpx.TimeoutException:
         raise Exception(f"Grok timeout at {detail_level}")
+    except Exception as e:
+        log_event("grok_call_error", request_id=request_id, error=str(e)[:200])
+        raise
 
 
-async def run_grok(junk_desc: str, project_type: str,
-                    detail_level: str, conception_context: str,
-                    mode: str = "blueprint") -> dict:
+# ── Public Entrypoint ─────────────────────────────────────────────────────────
+
+async def run_grok(junk_desc, project_type, detail_level,
+                   conception_context, mode="blueprint"):
     """Grok with retry wrapper."""
     try:
         return await retry_async(
-            run_grok_inner, junk_desc, project_type, detail_level, conception_context, mode,
+            run_grok_inner, junk_desc, project_type, detail_level,
+            conception_context, mode,
             max_attempts=2, base_delay=5.0, label="Grok"
         )
     except Exception as e:
         log.error("Grok failed after retries: %s", e)
         return {"analysis": f"Grok unavailable: {e}", "tokens": 0}
 
-def format_grok_for_claude(grok_analysis) -> str:
-    """Convert Grok's structured JSON back to readable text for Claude's prompt."""
-    if isinstance(grok_analysis, str):
-        return grok_analysis  # Already text (fallback mode)
 
+# ── Formatters ────────────────────────────────────────────────────────────────
+
+def format_grok_for_claude(grok_analysis):
+    """Convert Grok's structured JSON to readable text for Claude's prompt."""
+    if isinstance(grok_analysis, str):
+        return grok_analysis
     if not isinstance(grok_analysis, dict):
         return "No Grok analysis available."
 
@@ -191,26 +243,21 @@ def format_grok_for_claude(grok_analysis) -> str:
     gaps = grok_analysis.get("critical_gaps", [])
     if gaps:
         lines.append("CRITICAL GAPS: " + ", ".join(gaps))
-
     limits = grok_analysis.get("honest_limitations", [])
     if limits:
         lines.append("LIMITATIONS: " + ", ".join(limits))
-
     for idea in grok_analysis.get("creative_possibilities", []):
         lines.append(f"CREATIVE IDEA: {idea.get('idea', '?')} — {idea.get('why_unique', '')}")
-
     summary = grok_analysis.get("analysis_summary", "")
     if summary:
         lines.append(f"\nSUMMARY:\n{summary}")
-
     return "\n".join(lines)
 
 
-def format_grok_for_mechanic(grok_analysis) -> str:
+def format_grok_for_mechanic(grok_analysis):
     """Convert mechanic-mode Grok JSON to readable text for Claude."""
     if isinstance(grok_analysis, str):
         return grok_analysis
-
     if not isinstance(grok_analysis, dict):
         return "No diagnostic analysis available."
 
@@ -243,9 +290,7 @@ def format_grok_for_mechanic(grok_analysis) -> str:
     warning = grok_analysis.get("critical_warning", "")
     if warning:
         lines.append(f"CRITICAL WARNING: {warning}\n")
-
     summary = grok_analysis.get("diagnostic_summary", "")
     if summary:
         lines.append(f"SUMMARY:\n{summary}")
-
     return "\n".join(lines)
