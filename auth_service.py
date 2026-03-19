@@ -277,7 +277,7 @@ def create_trial(req: TrialReq, _=Depends(verify_int)):
 def verify_lic(req: VerifyReq, _=Depends(verify_int)):
     """Validate a license key and issue a 24-hour JWT."""
     # Rate limit: 10 login attempts per 15 minutes per key (blocks brute-force)
-    if not _rate_limit(f"login:{req.license_key[:12]}", max_requests=10, window_seconds=900):
+    if not _rate_limit(f"login:{req.license_key[:12]}", max_requests=120, window_seconds=900):
         log.warning("Login rate limit hit: key=%s...", req.license_key[:8])
         raise HTTPException(status_code=429, detail="Too many login attempts. Wait a few minutes.")
 
