@@ -603,6 +603,7 @@ def render():
                             st.session_state.user_name  = result["name"]
                             st.session_state.tier       = result["tier"]
                             st.session_state.jwt_token  = result["token"]
+                            st.query_params["k"] = license_key  # Persist across refresh
                             st.rerun()
         with col_b:
             st.link_button("BUY TOKENS", STRIPE_SPARK, use_container_width=True)
