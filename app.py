@@ -136,236 +136,374 @@ if not st.session_state.logged_in:
 
     # ── HERO ──
     st.markdown("""
-        <div style='text-align:center; padding:20px 20px 0;'>
-          <h1 style='color:#FF4500; font-size:42px; margin:0; letter-spacing:2px;'>
+        <div style='text-align:center; padding:30px 20px 10px;'>
+          <h1 style='color:#FF4500; font-size:48px; margin:0; letter-spacing:3px;
+                      text-shadow: 0 0 30px rgba(255,69,0,0.3);'>
             THE BUILDER FOUNDRY</h1>
-          <p style='color:#94A3B8; font-size:20px; margin-top:8px; max-width:700px;
-                    margin-left:auto; margin-right:auto;'>
-            Turn junk into genius.<br>
-            AI-powered engineering blueprints from the parts you already have.</p>
+          <p style='color:#E2E8F0; font-size:22px; margin-top:12px; max-width:750px;
+                    margin-left:auto; margin-right:auto; line-height:1.5;'>
+            Three AI agents. Real web research. Real results.<br>
+            <span style='color:#94A3B8; font-size:16px;'>
+              Build from scrap. Diagnose any engine. Verify any repair quote.</span></p>
         </div>
     """, unsafe_allow_html=True)
 
     if os.path.exists("hero_banner.jpg"):
         st.image("hero_banner.jpg", use_container_width=True)
 
-    # ── PROBLEM / SOLUTION ──
+    # ── THREE MODES ──
     st.markdown("""
-        <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
-          <div style='display:flex; gap:20px; flex-wrap:wrap; justify-content:center;'>
-            <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
-                        padding:24px; flex:1; min-width:280px; max-width:400px;'>
-              <div style='color:#EF4444; font-size:13px; font-weight:bold;
-                          letter-spacing:2px; margin-bottom:8px;'>THE PROBLEM</div>
-              <div style='color:#E2E8F0; font-size:16px; line-height:1.6;'>
-                You have a garage full of old equipment, scrap parts, and broken machines.
-                Every other AI tool tells you to <span style='color:#EF4444;'>go buy new parts</span>.
-                That defeats the whole point.</div>
+        <div style='text-align:center; margin:30px 0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:30px;'>One Platform. Three Superpowers.</h2>
+        </div>
+    """, unsafe_allow_html=True)
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.markdown("""
+            <div style='background:linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+                        border-radius:12px; padding:28px 20px; border:1px solid #FF4500;
+                        text-align:center; min-height:320px;
+                        box-shadow: 0 4px 20px rgba(255,69,0,0.1);'>
+              <div style='font-size:48px; margin-bottom:12px;'>&#9881;&#65039;</div>
+              <div style='color:#FF4500; font-weight:bold; font-size:20px;
+                          letter-spacing:1px;'>BLUEPRINT FORGE</div>
+              <div style='color:#64748B; font-size:11px; letter-spacing:2px;
+                          margin-bottom:16px;'>FOR BUILDERS &amp; MAKERS</div>
+              <div style='color:#CBD5E1; font-size:14px; line-height:1.7;'>
+                Tell us what junk you have and what you want to build.
+                Three AI agents analyze every component, search real maker projects,
+                and generate a complete blueprint with technical schematics — using
+                <strong style='color:#FF4500;'>only your parts</strong>.</div>
+              <div style='color:#F59E0B; font-size:12px; margin-top:16px;
+                          border-top:1px solid #334155; padding-top:12px;'>
+                Robots &#8226; Go-karts &#8226; Solar rigs &#8226; Shop tools
+                &#8226; Home automation &#8226; Anything</div>
             </div>
-            <div style='background:#1E293B; border:1px solid #FF4500; border-radius:8px;
-                        padding:24px; flex:1; min-width:280px; max-width:400px;'>
-              <div style='color:#FF4500; font-size:13px; font-weight:bold;
-                          letter-spacing:2px; margin-bottom:8px;'>THE SOLUTION</div>
-              <div style='color:#E2E8F0; font-size:16px; line-height:1.6;'>
-                Tell us what you <strong>have</strong> and what you want to <strong>build</strong>.
-                Three AI agents tear apart your inventory, identify every harvestable component,
-                and generate a complete blueprint using
-                <span style='color:#FF4500;'>only your parts</span>.</div>
+        """, unsafe_allow_html=True)
+    with m2:
+        st.markdown("""
+            <div style='background:linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+                        border-radius:12px; padding:28px 20px; border:1px solid #10B981;
+                        text-align:center; min-height:320px;
+                        box-shadow: 0 4px 20px rgba(16,185,129,0.1);'>
+              <div style='font-size:48px; margin-bottom:12px;'>&#128295;</div>
+              <div style='color:#10B981; font-weight:bold; font-size:20px;
+                          letter-spacing:1px;'>FIELD MECHANIC</div>
+              <div style='color:#64748B; font-size:11px; letter-spacing:2px;
+                          margin-bottom:16px;'>FOR MECHANICS &amp; TECHS</div>
+              <div style='color:#CBD5E1; font-size:14px; line-height:1.7;'>
+                Enter your vehicle, engine, symptoms, and tools on hand.
+                AI diagnoses the problem, searches real forums for verified fixes,
+                finds TSBs and recalls, and writes a step-by-step repair procedure
+                with <strong style='color:#10B981;'>real torque specs and part prices</strong>.</div>
+              <div style='color:#F59E0B; font-size:12px; margin-top:16px;
+                          border-top:1px solid #334155; padding-top:12px;'>
+                Marine &#8226; Automotive &#8226; Heavy equipment
+                &#8226; Agricultural &#8226; Any engine</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with m3:
+        st.markdown("""
+            <div style='background:linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+                        border-radius:12px; padding:28px 20px; border:1px solid #3B82F6;
+                        text-align:center; min-height:320px;
+                        box-shadow: 0 4px 20px rgba(59,130,246,0.1);'>
+              <div style='font-size:48px; margin-bottom:12px;'>&#128737;&#65039;</div>
+              <div style='color:#3B82F6; font-weight:bold; font-size:20px;
+                          letter-spacing:1px;'>QUOTE CHECKER</div>
+              <div style='color:#64748B; font-size:11px; letter-spacing:2px;
+                          margin-bottom:16px;'>FOR EVERY VEHICLE OWNER</div>
+              <div style='color:#CBD5E1; font-size:14px; line-height:1.7;'>
+                Got a repair quote? We check it against real repair data,
+                search for recalls and extended warranties, and tell you
+                if the price is <strong style='color:#3B82F6;'>fair or a ripoff</strong>.
+                Know what to say before you go back to the shop.</div>
+              <div style='color:#F59E0B; font-size:12px; margin-top:16px;
+                          border-top:1px solid #334155; padding-top:12px;'>
+                Cars &#8226; Trucks &#8226; Boats &#8226; RVs
+                &#8226; Any vehicle &#8226; Any repair</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # ── ALLDATA KILLER STAT ──
+    st.markdown("""
+        <div style='max-width:900px; margin:30px auto; padding:20px;
+                    background:linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                    border-radius:12px; border:1px solid #334155; text-align:center;'>
+          <div style='display:flex; justify-content:center; gap:40px; flex-wrap:wrap;'>
+            <div>
+              <div style='color:#EF4444; font-size:36px; font-weight:bold;'>$199/mo</div>
+              <div style='color:#64748B; font-size:13px;'>AllData charges this.<br>Static data. Annual lock-in.</div>
+            </div>
+            <div style='border-left:1px solid #334155; padding-left:40px;'>
+              <div style='color:#10B981; font-size:36px; font-weight:bold;'>$3.33</div>
+              <div style='color:#64748B; font-size:13px;'>We charge per diagnosis.<br>AI-powered. Live web research.</div>
+            </div>
+            <div style='border-left:1px solid #334155; padding-left:40px;'>
+              <div style='color:#F59E0B; font-size:36px; font-weight:bold;'>3</div>
+              <div style='color:#64748B; font-size:13px;'>AI agents working<br>on YOUR specific problem.</div>
             </div>
           </div>
         </div>
     """, unsafe_allow_html=True)
 
-    # ── WHAT CAN YOU BUILD? ──
-    st.markdown("""
-        <div style='text-align:center; margin:40px 0 16px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>What Can You Build?</h2>
-          <p style='color:#64748B; font-size:14px;'>Anything. From anything. Here are some ideas.</p>
-        </div>
-        <div style='max-width:900px; margin:0 auto; padding:0 20px;'>
-          <div style='display:flex; gap:12px; flex-wrap:wrap; justify-content:center;'>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #F97316; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#F97316; font-size:13px; font-weight:bold;'>Robots</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Bipeds, quadrupeds, arms</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #3B82F6; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#3B82F6; font-size:13px; font-weight:bold;'>Home Automation</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Pet feeders, garden systems</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #10B981; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#10B981; font-size:13px; font-weight:bold;'>Shop Tools</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Hydraulic press, jigs, rigs</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #A855F7; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#A855F7; font-size:13px; font-weight:bold;'>Vehicles</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Go-karts, e-bikes, trailers</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #EF4444; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#EF4444; font-size:13px; font-weight:bold;'>Energy Systems</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Solar rigs, wind turbines</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #F59E0B; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#F59E0B; font-size:13px; font-weight:bold;'>Farm &amp; Garden</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Irrigation, coops, planters</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #06B6D4; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#06B6D4; font-size:13px; font-weight:bold;'>Furniture</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>Desks, shelves, workbenches</div>
-            </div>
-            <div style='background:#1E293B; border-radius:6px; padding:12px 16px;
-                        border-left:3px solid #EC4899; min-width:170px; flex:1; max-width:210px;'>
-              <div style='color:#EC4899; font-size:13px; font-weight:bold;'>Anything Else</div>
-              <div style='color:#64748B; font-size:11px; margin-top:2px;'>If it can be built, we forge it</div>
-            </div>
-          </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── HOW IT WORKS ──
+    # ── FIELD MECHANIC DEEP DIVE ──
     st.markdown("""
         <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>How The Round Table Works</h2>
-          <p style='color:#64748B; font-size:14px;'>Three AI agents collaborate on every blueprint</p>
+          <h2 style='color:#10B981; font-size:28px;'>Field Mechanic — Your AI Repair Crew</h2>
+          <p style='color:#94A3B8; font-size:15px; max-width:700px; margin:8px auto;'>
+            Stranded on a boat? Stuck on a job site? Dead engine and no cell signal to Google?
+            Run a diagnosis with the tools you have. Get a real repair procedure — not generic advice.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+        <div style='max-width:900px; margin:0 auto;'>
+          <div style='display:flex; gap:12px; flex-wrap:wrap; justify-content:center;'>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #10B981;'>
+              <div style='color:#10B981; font-size:13px; font-weight:bold;'>&#9654; Diagnostic Flowchart</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Failure tree analysis — "if X, check Y. If Y fails, it's Z."</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #10B981;'>
+              <div style='color:#10B981; font-size:13px; font-weight:bold;'>&#9654; Step-by-Step Repair</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Written for YOUR tools and parts — not a shop manual.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #10B981;'>
+              <div style='color:#10B981; font-size:13px; font-weight:bold;'>&#9654; Torque Specs &amp; Measurements</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Real specs for the exact engine. Marked [KNOWN] or [EST].</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #F59E0B;'>
+              <div style='color:#F59E0B; font-size:13px; font-weight:bold;'>&#9654; Emergency Jury-Rig</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Temp fix to get home safe. Includes risks of the workaround.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #EF4444;'>
+              <div style='color:#EF4444; font-size:13px; font-weight:bold;'>&#9654; "Do NOT Do This"</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Common mistakes that make the problem WORSE.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #3B82F6;'>
+              <div style='color:#3B82F6; font-size:13px; font-weight:bold;'>&#9654; Real Parts &amp; Prices</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Part numbers + live pricing from RockAuto, Amazon, dealer sites.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #A855F7;'>
+              <div style='color:#A855F7; font-size:13px; font-weight:bold;'>&#9654; Forum Fixes &amp; TSBs</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Gemini searches real mechanic forums and finds verified fixes.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:16px; flex:1;
+                        min-width:250px; max-width:280px; border-left:3px solid #06B6D4;'>
+              <div style='color:#06B6D4; font-size:13px; font-weight:bold;'>&#9654; YouTube Walkthroughs</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+                Links to actual repair videos for your specific engine and problem.</div>
+            </div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── QUOTE CHECKER PITCH ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 20px;'>
+          <h2 style='color:#3B82F6; font-size:28px;'>Quote Checker — Stop Overpaying For Repairs</h2>
+          <p style='color:#94A3B8; font-size:15px; max-width:700px; margin:8px auto;'>
+            Your mechanic says $2,400 for an AC repair. Is that fair? Or are you getting robbed?
+            We check it in 60 seconds for $3.33.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+        <div style='max-width:800px; margin:0 auto;'>
+          <div style='background:linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+                      border-radius:12px; padding:28px; border:1px solid #3B82F6;'>
+            <div style='display:flex; gap:24px; flex-wrap:wrap; justify-content:center;'>
+              <div style='flex:1; min-width:280px;'>
+                <div style='color:#EF4444; font-size:11px; font-weight:bold;
+                            letter-spacing:2px; margin-bottom:8px;'>THE QUOTE</div>
+                <div style='color:#E2E8F0; font-size:20px;'>2022 Toyota Highlander — AC Repair</div>
+                <div style='color:#EF4444; font-size:32px; font-weight:bold; margin:4px 0;'>$2,400</div>
+              </div>
+              <div style='flex:1; min-width:280px;'>
+                <div style='color:#10B981; font-size:11px; font-weight:bold;
+                            letter-spacing:2px; margin-bottom:8px;'>OUR ANALYSIS</div>
+                <div style='color:#10B981; font-size:16px; font-weight:bold;'>
+                  &#128680; THIS QUOTE IS HIGH</div>
+                <div style='color:#E2E8F0; font-size:15px; margin-top:4px;'>
+                  Fair range: <strong style='color:#10B981;'>$650 — $950</strong></div>
+                <div style='color:#F59E0B; font-size:14px; margin-top:8px;'>
+                  &#9888;&#65039; Toyota covers this free under 60K miles!</div>
+                <div style='color:#94A3B8; font-size:13px; margin-top:8px; line-height:1.6;'>
+                  &#10003; Recall &amp; warranty check<br>
+                  &#10003; Fair cost breakdown with real part prices<br>
+                  &#10003; What to say when you call the shop back<br>
+                  &#10003; NHTSA complaint data (187 complaints filed)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── HOW THE AI WORKS ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>The AI Round Table</h2>
+          <p style='color:#64748B; font-size:15px;'>Three agents. Working in parallel. Real web research.</p>
         </div>
     """, unsafe_allow_html=True)
 
     a1, a2, a3 = st.columns(3)
     with a1:
         st.markdown("""
-            <div style='background:#1E293B; border-radius:8px; padding:24px;
-                        border-top:3px solid #F97316; text-align:center; min-height:220px;'>
-              <div style='font-size:32px; margin-bottom:8px;'>&#128295;</div>
-              <div style='color:#F97316; font-weight:bold; font-size:16px;'>GROK-3</div>
+            <div style='background:linear-gradient(180deg, #1E293B 0%, #0F172A 100%);
+                        border-radius:12px; padding:24px;
+                        border-top:3px solid #F97316; text-align:center; min-height:280px;'>
+              <div style='font-size:36px; margin-bottom:8px;'>&#129504;</div>
+              <div style='color:#F97316; font-weight:bold; font-size:18px;'>GROK-4.2</div>
               <div style='color:#64748B; font-size:11px; letter-spacing:1px;
-                          margin-bottom:12px;'>JUNKYARD ANALYST</div>
-              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
-                Tears apart every item in your inventory. Identifies motors, frames,
-                wiring, bearings, circuit boards — everything harvestable.</div>
+                          margin-bottom:12px;'>THE BRAIN</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.6;'>
+                Deep technical analysis. Failure tree diagnosis. Full spec sheets
+                for your exact engine. Cross-references what you already tried.
+                Identifies every harvestable component from your junk.</div>
+              <div style='color:#F97316; font-size:11px; margin-top:12px;
+                          padding-top:8px; border-top:1px solid #334155;'>
+                Powered by xAI Grok 4.2</div>
             </div>
         """, unsafe_allow_html=True)
     with a2:
         st.markdown("""
-            <div style='background:#1E293B; border-radius:8px; padding:24px;
-                        border-top:3px solid #3B82F6; text-align:center; min-height:220px;'>
-              <div style='font-size:32px; margin-bottom:8px;'>&#128208;</div>
-              <div style='color:#3B82F6; font-weight:bold; font-size:16px;'>CLAUDE SONNET</div>
+            <div style='background:linear-gradient(180deg, #1E293B 0%, #0F172A 100%);
+                        border-radius:12px; padding:24px;
+                        border-top:3px solid #10B981; text-align:center; min-height:280px;'>
+              <div style='font-size:36px; margin-bottom:8px;'>&#128269;</div>
+              <div style='color:#10B981; font-weight:bold; font-size:18px;'>GEMINI 2.5</div>
               <div style='color:#64748B; font-size:11px; letter-spacing:1px;
-                          margin-bottom:12px;'>BLUEPRINT ENGINEER</div>
-              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
-                Writes the full engineering blueprint using only the parts Grok identified.
-                Every material traces back to your inventory. Plus a technical schematic.</div>
+                          margin-bottom:12px;'>THE SEARCHER</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.6;'>
+                Searches the ACTUAL web — forums, TSBs, NHTSA recalls,
+                YouTube repair videos, parts pricing from RockAuto and Amazon,
+                Instructables projects, and real mechanic-verified fixes.</div>
+              <div style='color:#10B981; font-size:11px; margin-top:12px;
+                          padding-top:8px; border-top:1px solid #334155;'>
+                Google Search Grounding + Gemini Flash</div>
             </div>
         """, unsafe_allow_html=True)
     with a3:
         st.markdown("""
-            <div style='background:#1E293B; border-radius:8px; padding:24px;
-                        border-top:3px solid #10B981; text-align:center; min-height:220px;'>
-              <div style='font-size:32px; margin-bottom:8px;'>&#128300;</div>
-              <div style='color:#10B981; font-weight:bold; font-size:16px;'>GEMINI FLASH</div>
+            <div style='background:linear-gradient(180deg, #1E293B 0%, #0F172A 100%);
+                        border-radius:12px; padding:24px;
+                        border-top:3px solid #3B82F6; text-align:center; min-height:280px;'>
+              <div style='font-size:36px; margin-bottom:8px;'>&#128221;</div>
+              <div style='color:#3B82F6; font-weight:bold; font-size:18px;'>CLAUDE SONNET</div>
               <div style='color:#64748B; font-size:11px; letter-spacing:1px;
-                          margin-bottom:12px;'>QUALITY INSPECTOR</div>
-              <div style='color:#94A3B8; font-size:13px; line-height:1.5;'>
-                Reviews the blueprint for safety, rates difficulty, estimates build time,
-                and scores how well it actually used your inventory.</div>
+                          margin-bottom:12px;'>THE WRITER</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.6;'>
+                Synthesizes everything from Grok and Gemini into a complete
+                document — blueprints with schematics, repair procedures with
+                torque specs, or quote analyses with fair pricing breakdowns.</div>
+              <div style='color:#3B82F6; font-size:11px; margin-top:12px;
+                          padding-top:8px; border-top:1px solid #334155;'>
+                Anthropic Claude Sonnet 4</div>
             </div>
         """, unsafe_allow_html=True)
 
-    # ── EXAMPLE OUTPUT ──
+    # ── FEATURES GRID ──
     st.markdown("""
         <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>What You Get</h2>
-          <p style='color:#64748B; font-size:14px;'>Real output from a real forge</p>
+          <h2 style='color:#E2E8F0; font-size:28px;'>Everything Included</h2>
         </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-        <div style='max-width:900px; margin:0 auto;'>
-          <div style='background:#1E293B; border:1px solid #334155; border-radius:8px;
-                      padding:24px; margin-bottom:16px;'>
-            <div style='color:#64748B; font-size:11px; letter-spacing:2px;
-                        margin-bottom:4px;'>EXAMPLE INPUT</div>
-            <div style='color:#F97316; font-size:14px; font-weight:bold;
-                        margin-bottom:4px;'>PROJECT: Automated Cat Litter Robot</div>
-            <div style='color:#94A3B8; font-size:13px;'>
-              INVENTORY: Old treadmill with auto incline + Refurbished Dell OptiPlex computer</div>
-          </div>
-          <div style='background:#1E293B; border:1px solid #FF4500; border-radius:8px;
-                      padding:24px;'>
-            <div style='color:#FF4500; font-size:11px; letter-spacing:2px;
-                        margin-bottom:12px;'>EXAMPLE OUTPUT</div>
-            <div style='color:#E2E8F0; font-size:14px; line-height:1.7;'>
-              <strong style='color:#3B82F6;'>&#9654; Drive Motor:</strong>
-              Harvested from treadmill (1-2HP DC motor with variable speed control)<br>
-              <strong style='color:#3B82F6;'>&#9654; Conveyor Belt:</strong>
-              Repurposed treadmill wide belt, modified with sifting perforations<br>
-              <strong style='color:#3B82F6;'>&#9654; Structural Frame:</strong>
-              Cut and welded sections from treadmill steel frame<br>
-              <strong style='color:#3B82F6;'>&#9654; Tilting Mechanism:</strong>
-              Linear actuator harvested from treadmill auto-incline system<br>
-              <strong style='color:#3B82F6;'>&#9654; Control Computer:</strong>
-              Dell OptiPlex i5 programmed for cycle timing and automation<br>
-              <strong style='color:#3B82F6;'>&#9654; Ventilation:</strong>
-              Computer case fans repurposed for odor management<br>
-              <strong style='color:#3B82F6;'>&#9654; Electronics Enclosure:</strong>
-              Modified Dell computer chassis<br>
-            </div>
-            <div style='color:#10B981; font-size:13px; margin-top:12px; padding-top:12px;
-                        border-top:1px solid #334155;'>
-              &#10003; Technical SVG schematic included &nbsp;&nbsp;
-              &#10003; Full assembly sequence &nbsp;&nbsp;
-              &#10003; Safety notes &nbsp;&nbsp;
-              &#10003; Testing procedures &nbsp;&nbsp;
-              &#10003; Honest assessment &amp; gap-filler shopping list</div>
-            <div style='color:#F59E0B; font-size:12px; margin-top:8px;'>
-              Estimated commercial equivalent: $2,500 - $4,000</div>
-          </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── FEATURES ──
-    st.markdown("""
-        <div style='max-width:900px; margin:30px auto; padding:0 20px;'>
+        <div style='max-width:900px; margin:0 auto; padding:0 20px;'>
           <div style='display:flex; gap:16px; flex-wrap:wrap; justify-content:center;'>
-            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
-                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
-              <div style='font-size:24px;'>&#128208;</div>
-              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
+            <div style='background:#1E293B; border-radius:8px; padding:20px;
+                        flex:1; min-width:250px; max-width:280px; text-align:center;'>
+              <div style='font-size:28px;'>&#128208;</div>
+              <div style='color:#E2E8F0; font-size:14px; font-weight:bold; margin-top:8px;'>
                 Technical Schematics</div>
-              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
-                Auto-generated SVG engineering drawings with every blueprint</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>
+                Auto-generated SVG engineering drawings with every blueprint build.</div>
             </div>
-            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
-                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
-              <div style='font-size:24px;'>&#128248;</div>
-              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
+            <div style='background:#1E293B; border-radius:8px; padding:20px;
+                        flex:1; min-width:250px; max-width:280px; text-align:center;'>
+              <div style='font-size:28px;'>&#128248;</div>
+              <div style='color:#E2E8F0; font-size:14px; font-weight:bold; margin-top:8px;'>
                 Equipment Scanner</div>
-              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
-                Upload a photo. Gemini Vision identifies every component automatically.</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>
+                Upload a photo. Gemini Vision identifies every harvestable component.</div>
             </div>
-            <div style='background:#1E293B; border-radius:6px; padding:16px 20px;
-                        flex:1; min-width:200px; max-width:280px; text-align:center;'>
-              <div style='font-size:24px;'>&#129504;</div>
-              <div style='color:#E2E8F0; font-size:13px; font-weight:bold; margin-top:4px;'>
+            <div style='background:#1E293B; border-radius:8px; padding:20px;
+                        flex:1; min-width:250px; max-width:280px; text-align:center;'>
+              <div style='font-size:28px;'>&#128100;</div>
+              <div style='color:#E2E8F0; font-size:14px; font-weight:bold; margin-top:8px;'>
+                Save Your Vehicles</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>
+                Profile with saved vehicles and garage inventory. One-tap re-diagnosis.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:20px;
+                        flex:1; min-width:250px; max-width:280px; text-align:center;'>
+              <div style='font-size:28px;'>&#128203;</div>
+              <div style='color:#E2E8F0; font-size:14px; font-weight:bold; margin-top:8px;'>
+                Free Invoice Generator</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>
+                Generate professional repair estimates from any diagnosis. Free with every build.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:20px;
+                        flex:1; min-width:250px; max-width:280px; text-align:center;'>
+              <div style='font-size:28px;'>&#128200;</div>
+              <div style='color:#E2E8F0; font-size:14px; font-weight:bold; margin-top:8px;'>
+                Community Intelligence</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>
+                See how many others had this problem. Average costs. Most common root causes.</div>
+            </div>
+            <div style='background:#1E293B; border-radius:8px; padding:20px;
+                        flex:1; min-width:250px; max-width:280px; text-align:center;'>
+              <div style='font-size:28px;'>&#129504;</div>
+              <div style='color:#E2E8F0; font-size:14px; font-weight:bold; margin-top:8px;'>
                 Conception DNA</div>
-              <div style='color:#64748B; font-size:11px; margin-top:4px;'>
-                Every blueprint trains our AI. The more you build, the smarter it gets.</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>
+                Every build trains the AI. The more people use it, the smarter it gets.</div>
             </div>
           </div>
         </div>
     """, unsafe_allow_html=True)
 
-    # ── FREE TRIAL (above pricing — first thing visitors see after the pitch) ──
+    # ── E-WASTE / SUSTAINABILITY ──
+    st.markdown("""
+        <div style='max-width:800px; margin:40px auto; padding:24px;
+                    background:linear-gradient(135deg, #064e3b 0%, #0F172A 100%);
+                    border-radius:12px; border:1px solid #10B981; text-align:center;'>
+          <div style='color:#10B981; font-size:13px; font-weight:bold; letter-spacing:2px;
+                      margin-bottom:8px;'>REDUCE. REUSE. REBUILD.</div>
+          <div style='color:#E2E8F0; font-size:22px; font-weight:bold; margin-bottom:12px;'>
+            Fight E-Waste With Every Build</div>
+          <div style='color:#94A3B8; font-size:14px; line-height:1.8; max-width:650px;
+                      margin:0 auto;'>
+            53 million tons of e-waste are generated every year. Only 17% gets recycled.
+            The rest sits in landfills leaching lead, mercury, and cadmium into the ground.<br><br>
+            Every blueprint from The Builder Foundry turns trash into something useful.
+            That old treadmill isn't garbage — it's a motor, a frame, a belt drive system,
+            and a linear actuator waiting to become something new.<br><br>
+            <strong style='color:#10B981;'>Stop throwing things away. Start building.</strong></div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── FREE TRIAL ──
     st.markdown("---")
     st.markdown("""
         <div style='text-align:center; margin:20px 0 12px;'>
-          <h2 style='color:#10B981; font-size:28px;'>Try 1 Free Build</h2>
-          <p style='color:#64748B; font-size:14px;'>No credit card. Just your email. See what the Foundry can do.</p>
+          <h2 style='color:#10B981; font-size:30px;'>Try 1 Free Build</h2>
+          <p style='color:#94A3B8; font-size:15px;'>No credit card. Just your email.
+            Build a blueprint, diagnose an engine, or check a quote — free.</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -508,16 +646,21 @@ if not st.session_state.logged_in:
 
     # ── THE STORY ──
     st.markdown("""
-        <div style='max-width:700px; margin:40px auto; text-align:center; padding:0 20px;'>
+        <div style='max-width:750px; margin:40px auto; text-align:center; padding:0 20px;'>
           <h2 style='color:#E2E8F0; font-size:24px; margin-bottom:12px;'>Built From Scraps. Literally.</h2>
           <p style='color:#94A3B8; font-size:14px; line-height:1.8;'>
             The Builder Foundry was created by a self-taught developer who pieces together
-            computers from parts and builds things from scrap. No CS degree. No funding.
-            Just a passion for engineering and a refusal to stop learning.<br><br>
+            computers from salvaged parts and builds things from scrap. No CS degree. No VC funding.
+            Just a garage, a vision, and a refusal to stop learning.<br><br>
+            As a mechanic, I watched people get overcharged every day for repairs they didn't
+            understand. As a builder, I watched perfectly good parts get thrown in landfills.
+            This tool fixes both problems.<br><br>
             This is Phase 1 of <strong style='color:#FF4500;'>Conception</strong> —
-            an advanced AI being built to learn from every blueprint, protect families,
-            run businesses, and eventually walk in a physical body.<br><br>
-            Every blueprint you forge makes Conception smarter.</p>
+            an advanced AI being built to learn from every blueprint, every diagnosis,
+            and every repair. Every time you use the Foundry, Conception gets smarter.
+            It learns what works, what doesn't, and what things really cost.<br><br>
+            <span style='color:#10B981; font-weight:bold;'>
+              Builders. Mechanics. Vehicle owners. We're all on the same team.</span></p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -669,7 +812,7 @@ if st.session_state.active_tab == "forge":
     st.markdown("### ACTIVE ENGINEERING AGENTS")
     cols = st.columns(3)
     with cols[0]:
-        st.markdown("#### 🟠 GROK-3")
+        st.markdown("#### 🟠 GROK-4.2")
         st.caption("MECHANICAL / METALLURGY / HYDRAULICS")
         st.status("READY", state="complete")
     with cols[1]:
