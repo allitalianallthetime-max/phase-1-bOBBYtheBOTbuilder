@@ -244,14 +244,19 @@ def gen_blueprint(req: BuildReq):
             detail="Too many forge requests. Please wait before trying again."
         )
 
-    # ── QUOTA CHECK & INCREMENT ──
+    # ── TOKEN COST CALCULATION ──
+    token_costs = {"Standard": 1, "Industrial": 3, "Experimental": 5}
+    cost = token_costs.get(req.detail_level, 1)
+
+    # ── TOKEN DEDUCTION (replaces old build_count system) ──
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cur:
             if req.user_email not in ("admin", "anonymous"):
                 cur.execute(
-                    "SELECT build_count, tier FROM licenses "
-                    "WHERE email = %s AND status = 'active'",
+                    "SELECT token_balance, tier FROM licenses "
+                    "WHERE email = %s AND status = 'active' "
+                    "ORDER BY created_at DESC LIMIT 1",
                     (req.user_email,)
                 )
                 lic = cur.fetchone()
@@ -262,37 +267,36 @@ def gen_blueprint(req: BuildReq):
                         detail="No active license found."
                     )
 
-                build_count, tier = lic
-                tier_limits = {"master": 999, "pro": 100, "starter": 25, "trial": 1}
-                limit = tier_limits.get(tier, 25)
+                balance, tier = lic
 
-                if build_count >= limit:
-                    if tier == "trial":
+                if balance < cost:
+                    if balance == 0 and tier == "trial":
                         raise HTTPException(
                             status_code=402,
-                            detail="Your free trial build has been used. Upgrade to Starter ($9.99/mo) for 25 builds per month!"
+                            detail="Your free token has been used. Buy a Spark pack (3 tokens / $9.99) to keep building!"
                         )
                     raise HTTPException(
                         status_code=402,
-                        detail="Engineering quota exceeded. Upgrade your license for more builds."
+                        detail=f"Not enough tokens. This {req.detail_level} build costs {cost} tokens. You have {balance}. Buy more tokens to continue."
                     )
 
                 cur.execute(
-                    "UPDATE licenses SET build_count = build_count + 1 "
-                    "WHERE email = %s",
-                    (req.user_email,)
+                    "UPDATE licenses SET token_balance = token_balance - %s, "
+                    "tokens_used = tokens_used + %s "
+                    "WHERE email = %s AND status = 'active'",
+                    (cost, cost, req.user_email)
                 )
                 conn.commit()
                 log.info(
-                    "Forge queued: user=%s project='%s' depth=%s builds=%d/%d",
+                    "Forge queued: user=%s project='%s' depth=%s cost=%d tokens remaining=%d",
                     req.user_email, project_clean[:40], req.detail_level,
-                    build_count + 1, limit
+                    cost, balance - cost
                 )
     except HTTPException:
         raise
     except Exception as e:
         conn.rollback()
-        log.error("Database error during quota check: %s", e)
+        log.error("Database error during token check: %s", e)
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         db_pool.putconn(conn)
