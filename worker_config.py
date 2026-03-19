@@ -84,6 +84,7 @@ GMAIL_APP_PW   = os.getenv("GMAIL_APP_PW", "")
 
 # ── MODEL NAMES (change here when upgrading) ──
 GROK_MODEL    = os.getenv("GROK_MODEL",    "grok-4.20-beta-0309-reasoning")
+GROK_TEMPERATURE = float(os.getenv("GROK_TEMPERATURE", "0.3"))
 CLAUDE_MODEL  = os.getenv("CLAUDE_MODEL",  "claude-sonnet-4-20250514")
 GEMINI_MODEL  = os.getenv("GEMINI_MODEL",  "gemini-2.5-flash")
 
