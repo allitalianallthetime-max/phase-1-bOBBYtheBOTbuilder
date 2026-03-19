@@ -1012,37 +1012,68 @@ elif st.session_state.active_tab == "mechanic":
     col_left, col_right = st.columns([2, 1])
 
     with col_left:
-        engine_input = st.text_input(
-            "ENGINE / EQUIPMENT",
-            placeholder="e.g., Cummins 6BTA 5.9 Marine Diesel, CAT 3126, Yanmar 6LY-STE",
-            max_chars=200
-        )
+        # Row 1: Vehicle + Engine side by side
+        r1a, r1b = st.columns(2)
+        with r1a:
+            vehicle_input = st.text_input(
+                "YEAR / MAKE / MODEL",
+                placeholder="e.g., 2014 Honda Civic, 42ft Hatteras, John Deere 8400R",
+                max_chars=200
+            )
+        with r1b:
+            engine_input = st.text_input(
+                "ENGINE / POWERPLANT",
+                placeholder="e.g., Cummins 6BTA 5.9, K24A2, CAT C7, Yanmar 6LY",
+                max_chars=200
+            )
+
+        # Row 2: Mileage + Environment side by side
+        r2a, r2b = st.columns(2)
+        with r2a:
+            mileage_input = st.text_input(
+                "MILEAGE / HOURS",
+                placeholder="e.g., 142,000 miles, 3,200 hours, unknown",
+                max_chars=100
+            )
+        with r2b:
+            environment = st.selectbox(
+                "ENVIRONMENT",
+                ["Marine / Boat", "Automotive", "Heavy Equipment", "Agricultural",
+                 "Generator / Stationary", "HVAC / Refrigeration", "Motorcycle / Powersport", "Other"]
+            )
+
         symptom_input = st.text_area(
             "SYMPTOM / FAULT CODE / WHAT'S WRONG",
             placeholder=(
-                "Describe exactly what's happening...\n"
-                "e.g., Low oil pressure alarm at idle, black smoke under load, P0171 lean code,\n"
-                "engine cranks but won't start, overheating at 2000 RPM, raw water pump leaking"
+                "Describe exactly what's happening — be specific...\n"
+                "e.g., Low oil pressure alarm at idle, clears above 1200 RPM.\n"
+                "Black smoke under load. P0171 lean code. Engine cranks but won't fire.\n"
+                "Overheating at 2000 RPM. Raw water pump leaking from weep hole.\n"
+                "Grinding noise from starter. Transmission slipping in 3rd gear."
             ),
-            height=180, max_chars=3000
+            height=150, max_chars=3000
+        )
+        tried_input = st.text_area(
+            "WHAT HAVE YOU ALREADY TRIED?",
+            placeholder=(
+                "This prevents the AI from suggesting things you've already ruled out...\n"
+                "e.g., Changed oil and filter — no change. Checked coolant level — full.\n"
+                "Swapped fuel filter — same problem. Tested batteries — 12.6V each."
+            ),
+            height=100, max_chars=2000
         )
         tools_input = st.text_area(
             "TOOLS & SPARE PARTS ON HAND",
             placeholder=(
-                "List everything you have available RIGHT NOW...\n"
+                "List what you physically have available RIGHT NOW...\n"
                 "e.g., Basic hand tools, multimeter, spare oil filter, 15W-40 oil,\n"
-                "marine sealant, zip ties, hose clamps, JB Weld, spare impeller"
+                "marine sealant, zip ties, hose clamps, JB Weld, spare impeller, heat gun"
             ),
-            height=140, max_chars=3000
+            height=100, max_chars=3000
         )
 
     with col_right:
         st.markdown("### REPAIR PARAMETERS")
-        environment = st.selectbox(
-            "ENVIRONMENT",
-            ["Marine / Boat", "Heavy Equipment", "Agricultural", "Automotive",
-             "Generator / Stationary", "HVAC / Refrigeration", "Other"]
-        )
         mech_detail = st.select_slider(
             "DIAGNOSTIC DEPTH",
             options=["Standard", "Industrial", "Experimental"]
@@ -1064,23 +1095,43 @@ elif st.session_state.active_tab == "mechanic":
             </div>
         """, unsafe_allow_html=True)
 
+        st.markdown("""
+            <div style='background:#1E293B; padding:12px; border-radius:6px;
+                        border:1px solid #F59E0B; margin-bottom:12px;'>
+              <div style='color:#F59E0B; font-size:11px; font-weight:bold;
+                          letter-spacing:1px;'>WORKS FOR EVERYTHING</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:6px; line-height:1.6;'>
+                Marine diesels &#9679; Cars &amp; trucks<br>
+                Heavy equipment &#9679; Tractors<br>
+                Generators &#9679; HVAC systems<br>
+                Motorcycles &#9679; Anything with an engine</div>
+            </div>
+        """, unsafe_allow_html=True)
+
         diagnose = st.button("🔧 DIAGNOSE & REPAIR", use_container_width=True)
 
         if diagnose:
-            if not engine_input or not engine_input.strip():
-                st.error("Enter the engine or equipment model.")
+            if not vehicle_input.strip() and not engine_input.strip():
+                st.error("Enter a vehicle or engine — we need at least one to diagnose.")
             elif not symptom_input or not symptom_input.strip():
                 st.error("Describe the symptom or fault.")
             elif len(symptom_input.strip()) < 10:
                 st.error("Give more detail about the problem.")
             else:
-                # Combine engine + symptom + environment into project_type
+                # Build rich context string from all fields
+                vehicle_str = vehicle_input.strip() or "Not specified"
+                engine_str = engine_input.strip() or "Not specified"
+                mileage_str = mileage_input.strip() or "Not specified"
+                tried_str = tried_input.strip() if tried_input else "Nothing yet"
+
                 project_desc = (
-                    f"ENGINE: {engine_input.strip()}\n"
+                    f"VEHICLE: {vehicle_str}\n"
+                    f"ENGINE: {engine_str}\n"
+                    f"MILEAGE/HOURS: {mileage_str}\n"
                     f"ENVIRONMENT: {environment}\n"
-                    f"SYMPTOM: {symptom_input.strip()}"
+                    f"SYMPTOM: {symptom_input.strip()}\n"
+                    f"ALREADY TRIED: {tried_str}"
                 )
-                # Tools go into junk_desc field (repurposed for mechanic mode)
                 tools_desc = tools_input.strip() if tools_input else "Basic hand tools only"
 
                 with st.spinner("Waking diagnostic agents..."):
