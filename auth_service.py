@@ -82,6 +82,12 @@ def init_db():
                     tier               TEXT,
                     expires_at         TIMESTAMP,
                     build_count        INTEGER   DEFAULT 0,
+                    token_balance      INTEGER   DEFAULT 0,
+                    tokens_purchased   INTEGER   DEFAULT 0,
+                    tokens_used        INTEGER   DEFAULT 0,
+                    sub_tier           VARCHAR(20) DEFAULT NULL,
+                    sub_tokens_monthly INTEGER   DEFAULT 0,
+                    sub_next_refill    TIMESTAMP DEFAULT NULL,
                     notes              TEXT,
                     created_at         TIMESTAMP DEFAULT NOW()
                 )
@@ -95,6 +101,54 @@ def init_db():
                     payload    JSONB,
                     status     TEXT      DEFAULT 'pending',
                     created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    id              SERIAL PRIMARY KEY,
+                    email           TEXT UNIQUE NOT NULL,
+                    display_name    TEXT,
+                    business_name   TEXT,
+                    phone           TEXT,
+                    location        TEXT,
+                    bio             TEXT,
+                    certification   TEXT,
+                    default_labor_rate  DECIMAL(8,2),
+                    default_tax_rate    DECIMAL(5,2),
+                    default_markup      DECIMAL(5,2),
+                    default_terms       TEXT,
+                    preferences     JSONB DEFAULT '{}',
+                    created_at      TIMESTAMP DEFAULT NOW(),
+                    updated_at      TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_vehicles (
+                    id          SERIAL PRIMARY KEY,
+                    email       TEXT NOT NULL,
+                    nickname    TEXT,
+                    year        TEXT,
+                    make        TEXT,
+                    model       TEXT,
+                    engine      TEXT,
+                    mileage     TEXT,
+                    environment TEXT,
+                    notes       TEXT,
+                    is_default  BOOLEAN DEFAULT FALSE,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_inventory (
+                    id          SERIAL PRIMARY KEY,
+                    email       TEXT NOT NULL,
+                    item_name   TEXT NOT NULL,
+                    description TEXT,
+                    category    TEXT,
+                    condition   TEXT,
+                    specs       TEXT,
+                    location    TEXT,
+                    added_at    TIMESTAMP DEFAULT NOW()
                 )
             """)
             conn.commit()
@@ -135,6 +189,27 @@ class TrialReq(BaseModel):
     email_optin: bool = False
 
 
+# ── RATE LIMITER (in-memory, resets on restart — fine for abuse prevention) ──
+_rate_limits: dict = {}  # {"key": (count, first_request_timestamp)}
+
+
+def _rate_limit(key: str, max_requests: int, window_seconds: int) -> bool:
+    """Returns True if ALLOWED, False if rate limit exceeded."""
+    import time
+    now = time.time()
+    if key in _rate_limits:
+        count, window_start = _rate_limits[key]
+        if now - window_start > window_seconds:
+            _rate_limits[key] = (1, now)
+            return True
+        if count >= max_requests:
+            return False
+        _rate_limits[key] = (count + 1, window_start)
+        return True
+    _rate_limits[key] = (1, now)
+    return True
+
+
 # ── ENDPOINTS ──────────────────────────────────────────────────────────────
 
 @app.post("/auth/trial")
@@ -147,6 +222,11 @@ def create_trial(req: TrialReq, _=Depends(verify_int)):
 
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Valid email address required.")
+
+    # Rate limit: 5 trial attempts per hour per email (blocks rapid-fire abuse)
+    if not _rate_limit(f"trial:{email}", max_requests=5, window_seconds=3600):
+        log.warning("Trial rate limit hit: %s", email)
+        raise HTTPException(status_code=429, detail="Too many trial requests. Try again later.")
 
     # Check if this email already has ANY license (trial or paid)
     with get_db() as conn:
@@ -179,12 +259,14 @@ def create_trial(req: TrialReq, _=Depends(verify_int)):
             cur.execute(
                 """
                 INSERT INTO licenses
-                    (license_key, email, name, stripe_customer_id, tier, expires_at, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (license_key, email, name, stripe_customer_id, tier, expires_at,
+                     token_balance, tokens_purchased, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (key, email, "", "", "trial", exp,
-                 f"Free trial — 1 build | email_optin={req.email_optin}"),
+                 1, 1,
+                 f"Free trial — 1 token | email_optin={req.email_optin}"),
             )
             conn.commit()
 
@@ -194,6 +276,11 @@ def create_trial(req: TrialReq, _=Depends(verify_int)):
 @app.post("/verify-license")
 def verify_lic(req: VerifyReq, _=Depends(verify_int)):
     """Validate a license key and issue a 24-hour JWT."""
+    # Rate limit: 10 login attempts per 15 minutes per key (blocks brute-force)
+    if not _rate_limit(f"login:{req.license_key[:12]}", max_requests=10, window_seconds=900):
+        log.warning("Login rate limit hit: key=%s...", req.license_key[:8])
+        raise HTTPException(status_code=429, detail="Too many login attempts. Wait a few minutes.")
+
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -298,6 +385,174 @@ def expiring_licenses(within_days: int = 7):
     log.info("Expiring licenses query: %d results within %d days",
              len(licenses), within_days)
     return {"licenses": licenses}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROFILE CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ProfileUpdate(BaseModel):
+    display_name: str = ""
+    business_name: str = ""
+    phone: str = ""
+    location: str = ""
+    bio: str = ""
+    certification: str = ""
+    default_labor_rate: float = 0
+    default_tax_rate: float = 0
+    default_markup: float = 0
+    default_terms: str = ""
+
+
+@app.get("/profile/{email}", dependencies=[Depends(verify_int)])
+def get_profile(email: str):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM user_profiles WHERE email = %s", (email,))
+            row = cur.fetchone()
+            if not row:
+                return {"profile": None, "vehicles": [], "inventory": []}
+            cols = [d[0] for d in cur.description]
+            profile = dict(zip(cols, row))
+
+            cur.execute("SELECT * FROM user_vehicles WHERE email = %s ORDER BY is_default DESC, created_at DESC", (email,))
+            v_rows = cur.fetchall()
+            v_cols = [d[0] for d in cur.description]
+            vehicles = [dict(zip(v_cols, r)) for r in v_rows]
+
+            cur.execute("SELECT * FROM user_inventory WHERE email = %s ORDER BY added_at DESC", (email,))
+            i_rows = cur.fetchall()
+            i_cols = [d[0] for d in cur.description]
+            inventory = [dict(zip(i_cols, r)) for r in i_rows]
+
+    return {"profile": profile, "vehicles": vehicles, "inventory": inventory}
+
+
+@app.post("/profile/{email}", dependencies=[Depends(verify_int)])
+def upsert_profile(email: str, req: ProfileUpdate):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM user_profiles WHERE email = %s", (email,))
+            if cur.fetchone():
+                cur.execute(
+                    """UPDATE user_profiles SET display_name=%s, business_name=%s,
+                    phone=%s, location=%s, bio=%s, certification=%s,
+                    default_labor_rate=%s, default_tax_rate=%s, default_markup=%s,
+                    default_terms=%s, updated_at=NOW() WHERE email=%s""",
+                    (req.display_name, req.business_name, req.phone, req.location,
+                     req.bio, req.certification, req.default_labor_rate,
+                     req.default_tax_rate, req.default_markup, req.default_terms, email)
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO user_profiles (email, display_name, business_name,
+                    phone, location, bio, certification, default_labor_rate,
+                    default_tax_rate, default_markup, default_terms)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (email, req.display_name, req.business_name, req.phone,
+                     req.location, req.bio, req.certification, req.default_labor_rate,
+                     req.default_tax_rate, req.default_markup, req.default_terms)
+                )
+            conn.commit()
+    return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VEHICLE CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+class VehicleReq(BaseModel):
+    nickname: str = ""
+    year: str = ""
+    make: str = ""
+    model: str = ""
+    engine: str = ""
+    mileage: str = ""
+    environment: str = ""
+    notes: str = ""
+    is_default: bool = False
+
+
+@app.post("/profile/{email}/vehicle", dependencies=[Depends(verify_int)])
+def add_vehicle(email: str, req: VehicleReq):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if req.is_default:
+                cur.execute("UPDATE user_vehicles SET is_default=FALSE WHERE email=%s", (email,))
+            cur.execute(
+                """INSERT INTO user_vehicles (email, nickname, year, make, model,
+                engine, mileage, environment, notes, is_default)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (email, req.nickname, req.year, req.make, req.model,
+                 req.engine, req.mileage, req.environment, req.notes, req.is_default)
+            )
+            vid = cur.fetchone()[0]
+            conn.commit()
+    return {"id": vid, "status": "created"}
+
+
+@app.put("/profile/{email}/vehicle/{vid}", dependencies=[Depends(verify_int)])
+def update_vehicle(email: str, vid: int, req: VehicleReq):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if req.is_default:
+                cur.execute("UPDATE user_vehicles SET is_default=FALSE WHERE email=%s", (email,))
+            cur.execute(
+                """UPDATE user_vehicles SET nickname=%s, year=%s, make=%s, model=%s,
+                engine=%s, mileage=%s, environment=%s, notes=%s, is_default=%s
+                WHERE id=%s AND email=%s""",
+                (req.nickname, req.year, req.make, req.model, req.engine,
+                 req.mileage, req.environment, req.notes, req.is_default, vid, email)
+            )
+            conn.commit()
+    return {"status": "updated"}
+
+
+@app.delete("/profile/{email}/vehicle/{vid}", dependencies=[Depends(verify_int)])
+def delete_vehicle(email: str, vid: int):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_vehicles WHERE id=%s AND email=%s", (vid, email))
+            conn.commit()
+    return {"status": "deleted"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INVENTORY (MY GARAGE) CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+class InventoryReq(BaseModel):
+    item_name: str
+    description: str = ""
+    category: str = ""
+    condition: str = ""
+    specs: str = ""
+    location: str = ""
+
+
+@app.post("/profile/{email}/inventory", dependencies=[Depends(verify_int)])
+def add_inventory(email: str, req: InventoryReq):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO user_inventory (email, item_name, description,
+                category, condition, specs, location)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (email, req.item_name, req.description, req.category,
+                 req.condition, req.specs, req.location)
+            )
+            iid = cur.fetchone()[0]
+            conn.commit()
+    return {"id": iid, "status": "created"}
+
+
+@app.delete("/profile/{email}/inventory/{iid}", dependencies=[Depends(verify_int)])
+def delete_inventory(email: str, iid: int):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_inventory WHERE id=%s AND email=%s", (iid, email))
+            conn.commit()
+    return {"status": "deleted"}
 
 
 # ── HEALTH ─────────────────────────────────────────────────────────────────────
