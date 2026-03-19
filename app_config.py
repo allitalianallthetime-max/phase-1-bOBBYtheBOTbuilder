@@ -36,6 +36,7 @@ SESSION_DEFAULTS = {
     "forge_attempts": 0, "mechanic_task": None, "mechanic_attempts": 0,
     "quote_task": None, "quote_attempts": 0,
     "landing_warmed": False, "services_warmed": False,
+    "_auto_login_done": False,
 }
 
 # ── PIL (optional) ──
