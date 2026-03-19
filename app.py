@@ -55,16 +55,20 @@ if not st.session_state.logged_in:
     qp = st.query_params
     saved_key = qp.get("k", "")
     if saved_key and saved_key.startswith("BOB-"):
-        try:
-            result = api_post(f"{AUTH_URL}/verify-license", {"license_key": saved_key})
-            if not isinstance(result, APIError):
-                st.session_state.logged_in  = True
-                st.session_state.user_email = result["email"]
-                st.session_state.user_name  = result.get("name", "")
-                st.session_state.tier       = result["tier"]
-                st.session_state.jwt_token  = result["token"]
-        except Exception:
-            pass  # Silent — just show landing page
+        # Only try auto-login ONCE per session — don't hammer the auth service
+        if not st.session_state.get("_auto_login_done"):
+            st.session_state["_auto_login_done"] = True
+            try:
+                result = api_post(f"{AUTH_URL}/verify-license",
+                                  {"license_key": saved_key}, timeout=8.0)
+                if not isinstance(result, APIError):
+                    st.session_state.logged_in  = True
+                    st.session_state.user_email = result["email"]
+                    st.session_state.user_name  = result.get("name", "")
+                    st.session_state.tier       = result["tier"]
+                    st.session_state.jwt_token  = result["token"]
+            except Exception:
+                pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
