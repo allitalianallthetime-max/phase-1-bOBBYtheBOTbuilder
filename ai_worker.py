@@ -1,7 +1,7 @@
 """
 AI WORKER v3 — CELERY TASK RUNNER
 ====================================
-Pipeline: GROK-3 (JSON) -> CLAUDE (markdown) -> (GEMINI + SCHEMATIC parallel) -> Save
+Pipeline: GROK-4.2 (JSON) -> CLAUDE (markdown) -> (GEMINI + SCHEMATIC parallel) -> Save
 
 v3 improvements:
   - Grok returns structured JSON (components, specs, feasibility, creative ideas)
@@ -120,8 +120,8 @@ def _h() -> dict:
 # ── COST ESTIMATION ($ per 1K tokens, approximate) ───────────────────────────
 # Update these when pricing changes. Used for logging only, not billing.
 _COST_PER_1K = {
-    "grok_input":     0.003,   # Grok-3
-    "grok_output":    0.015,
+    "grok_input":     0.0002,  # Grok 4.2 ($0.20/M tokens)
+    "grok_output":    0.0005,  # Grok 4.2 ($0.50/M tokens)
     "claude_input":   0.003,   # Claude Sonnet
     "claude_output":  0.015,
     "gemini_input":   0.0001,  # Gemini 2.5 Flash
@@ -358,7 +358,7 @@ def _grok_failed(analysis) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AGENT 1: GROK-3 — STRUCTURED JSON OUTPUT
+# AGENT 1: GROK-4.2 — STRUCTURED JSON OUTPUT
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _run_grok_inner(junk_desc: str, project_type: str,
@@ -399,7 +399,7 @@ async def _run_grok_inner(junk_desc: str, project_type: str,
             ),
         }
         system = (
-            f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
+            f"You are GROK-4.2, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
             f"RULES:\n"
             f"- PROJECT GOAL = what the user wants to BUILD (they don't have it yet)\n"
             f"- INVENTORY = physical items the user ALREADY OWNS\n"
@@ -449,7 +449,7 @@ async def _run_grok_inner(junk_desc: str, project_type: str,
                 "https://api.x.ai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROK_KEY}", "Content-Type": "application/json"},
                 json={
-                    "model": "grok-3",
+                    "model": "grok-4.20-beta-0309-reasoning",
                     "messages": [
                         {"role": "system", "content": texts[0]},
                         {"role": "user", "content": texts[1]},
@@ -605,7 +605,7 @@ def _run_claude_sync(junk_desc: str, project_type: str,
         tools_text = _truncate(junk_desc, 3000)
 
         user_content = (
-            f"GROK-3 DIAGNOSTIC ANALYSIS:\n{grok_text}\n\n"
+            f"GROK-4.2 DIAGNOSTIC ANALYSIS:\n{grok_text}\n\n"
             + (f"{research_text}\n\n" if research_text else "")
             + f"REPAIR REQUEST:\n{project_type}\n\n"
             f"AVAILABLE TOOLS & PARTS:\n{tools_text}\n\n"
@@ -622,7 +622,7 @@ def _run_claude_sync(junk_desc: str, project_type: str,
         grok_text = _truncate(grok_text, 4000)
 
         user_content = (
-            f"GROK-3 COST ANALYSIS:\n{grok_text}\n\n"
+            f"GROK-4.2 COST ANALYSIS:\n{grok_text}\n\n"
             + (f"{research_text}\n\n" if research_text else "")
             + f"QUOTE TO CHECK:\n{project_type}\n\n"
             f"Write the complete quote analysis. Be honest — if the quote is fair, "
@@ -677,7 +677,7 @@ def _run_claude_sync(junk_desc: str, project_type: str,
         inventory_text = _truncate(junk_desc, 3000)
 
         user_content = (
-            f"GROK-3 INVENTORY ANALYSIS:\n{grok_text}\n\n"
+            f"GROK-4.2 INVENTORY ANALYSIS:\n{grok_text}\n\n"
             + (f"{research_text}\n\n" if research_text else "")
             + f"PROJECT GOAL:\n{project_type}\n\n"
             f"RAW INVENTORY:\n{inventory_text}\n\n"
@@ -1026,7 +1026,7 @@ async def _generate_schematic(blueprint: str, project_type: str,
 def _mechanic_grok_system(detail_level: str, conception_context: str) -> str:
     """Grok system prompt for mechanic/field repair mode."""
     return (
-        "You are GROK-3, a master diesel, marine, and automotive mechanic on AoC3P0 Builder Foundry.\n\n"
+        "You are GROK-4.2, a master diesel, marine, and automotive mechanic on AoC3P0 Builder Foundry.\n\n"
         "The user is a FIELD MECHANIC — they may be on a boat in the ocean, at a remote "
         "job site, or stranded with limited tools. They need PRACTICAL answers they can "
         "act on RIGHT NOW with what they have.\n\n"
@@ -1141,7 +1141,7 @@ def _mechanic_claude_system(detail_level: str, conception_context: str,
 
 def _quote_check_grok_system(conception_context: str) -> str:
     return (
-        "You are GROK-3, an expert automotive cost analyst on AoC3P0 Builder Foundry.\n\n"
+        "You are GROK-4.2, an expert automotive cost analyst on AoC3P0 Builder Foundry.\n\n"
         "A vehicle owner received a repair quote and wants to know if it's fair.\n\n"
         "Return ONLY valid JSON:\n"
         '{\n'
@@ -1219,9 +1219,9 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
 
         # 1 — Grok + Gemini Research IN PARALLEL
         if is_mechanic:
-            _update("GROK-3 diagnosing engine + GEMINI searching web for real fixes...")
+            _update("GROK-4.2 diagnosing engine + GEMINI searching web for real fixes...")
         else:
-            _update("GROK-3 analyzing inventory + GEMINI searching maker projects...")
+            _update("GROK-4.2 analyzing inventory + GEMINI searching maker projects...")
         with _Timer("Grok + Gemini Research") as t:
             grok_r, research_r = await asyncio.gather(
                 _run_grok(junk_desc, project_type, detail_level, ctx, mode=mode),
@@ -1234,9 +1234,9 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
 
         if not grok_ok:
             if is_mechanic:
-                _update("GROK-3 incomplete — CLAUDE diagnosing from symptoms directly")
+                _update("GROK-4.2 incomplete — CLAUDE diagnosing from symptoms directly")
             else:
-                _update("GROK-3 incomplete — CLAUDE analyzing inventory directly")
+                _update("GROK-4.2 incomplete — CLAUDE analyzing inventory directly")
 
         # Format research for Claude
         research_text = _format_research_for_claude(web_research, mode=mode)
@@ -1366,7 +1366,7 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
         "tags":             notes.get("tags", []),
         "conception_ready": notes.get("conception_ready", False),
         "tokens_used":      total_tokens,
-        "agents_used":      ["GROK-3", "CLAUDE-SONNET", "GEMINI-2.5-FLASH"],
+        "agents_used":      ["GROK-4.2", "CLAUDE-SONNET", "GEMINI-2.5-FLASH"],
         "timings":          timings,
         "costs":            costs,
         "grok_ok":          grok_ok,
