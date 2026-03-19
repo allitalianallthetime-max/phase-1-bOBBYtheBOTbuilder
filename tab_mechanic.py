@@ -99,28 +99,51 @@ def render():
         )
         _mech_cost = {"Standard": 1, "Industrial": 3, "Experimental": 5}
         _mc = _mech_cost.get(mech_detail, 1)
+        _depth_labels = {
+            "Standard": "Field Repair — basic tools",
+            "Industrial": "Advanced — full tool set",
+            "Experimental": "Full Shop Procedure — pro tech"
+        }
         st.markdown(f"""
             <div style='background:#1E293B; padding:10px; border-radius:6px;
                         text-align:center; margin:8px 0;'>
               <span style='color:#F59E0B; font-size:18px; font-weight:bold;'>{_mc}⚡</span>
-              <span style='color:#94A3B8; font-size:12px;'> tokens for {mech_detail}</span>
+              <span style='color:#94A3B8; font-size:12px;'> {_depth_labels.get(mech_detail, '')}</span>
             </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("""
-            <div style='background:#1E293B; padding:12px; border-radius:6px;
-                        border:1px solid #334155; margin-bottom:12px;'>
-              <div style='color:#F59E0B; font-size:11px; font-weight:bold;
-                          letter-spacing:1px;'>WHAT YOU GET</div>
-              <div style='color:#94A3B8; font-size:12px; margin-top:6px; line-height:1.6;'>
-                &#9654; Diagnostic flowchart<br>
-                &#9654; Step-by-step field repair<br>
-                &#9654; Torque specs &amp; measurements<br>
-                &#9654; Emergency jury-rig option<br>
-                &#9654; "Do NOT do this" warnings<br>
-                &#9654; Parts list for when you reach port</div>
-            </div>
-        """, unsafe_allow_html=True)
+        if mech_detail == "Experimental":
+            st.markdown("""
+                <div style='background:#1E293B; padding:12px; border-radius:6px;
+                            border:1px solid #A855F7; margin-bottom:12px;'>
+                  <div style='color:#A855F7; font-size:11px; font-weight:bold;
+                              letter-spacing:1px;'>FULL SHOP PROCEDURE</div>
+                  <div style='color:#94A3B8; font-size:12px; margin-top:6px; line-height:1.6;'>
+                    &#9654; Complete R&amp;R with step numbers<br>
+                    &#9654; Manifold gauge readings &amp; specs<br>
+                    &#9654; Vacuum pull specs &amp; charge weight<br>
+                    &#9654; Scan tool PIDs to monitor<br>
+                    &#9654; Leak detection procedure<br>
+                    &#9654; Root cause analysis<br>
+                    &#9654; Labor time guide (book vs real)<br>
+                    &#9654; OEM part numbers + aftermarket options</div>
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+                <div style='background:#1E293B; padding:12px; border-radius:6px;
+                            border:1px solid #334155; margin-bottom:12px;'>
+                  <div style='color:#F59E0B; font-size:11px; font-weight:bold;
+                              letter-spacing:1px;'>WHAT YOU GET</div>
+                  <div style='color:#94A3B8; font-size:12px; margin-top:6px; line-height:1.6;'>
+                    &#9654; Diagnostic flowchart<br>
+                    &#9654; Step-by-step field repair<br>
+                    &#9654; Torque specs &amp; measurements<br>
+                    &#9654; Emergency jury-rig option<br>
+                    &#9654; "Do NOT do this" warnings<br>
+                    &#9654; Parts list for when you reach port</div>
+                </div>
+            """, unsafe_allow_html=True)
 
         st.markdown("""
             <div style='background:#1E293B; padding:12px; border-radius:6px;
