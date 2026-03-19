@@ -50,6 +50,22 @@ for k, v in SESSION_DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+# ── Auto-login from query params (survives browser refresh) ──
+if not st.session_state.logged_in:
+    qp = st.query_params
+    saved_key = qp.get("k", "")
+    if saved_key and saved_key.startswith("BOB-"):
+        try:
+            result = api_post(f"{AUTH_URL}/verify-license", {"license_key": saved_key})
+            if not isinstance(result, APIError):
+                st.session_state.logged_in  = True
+                st.session_state.user_email = result["email"]
+                st.session_state.user_name  = result.get("name", "")
+                st.session_state.tier       = result["tier"]
+                st.session_state.jwt_token  = result["token"]
+        except Exception:
+            pass  # Silent — just show landing page
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LANDING PAGE (not logged in)
@@ -66,8 +82,9 @@ st.markdown(FORGE_HEADER_HTML, unsafe_allow_html=True)
 
 # Warm up AI service
 if not st.session_state.services_warmed:
-    ping_service(f"{AI_URL}/health", timeout=5.0)
-    st.session_state.services_warmed = True
+    awake = ping_service(f"{AI_URL}/health", timeout=15.0)
+    if awake:
+        st.session_state.services_warmed = True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -146,6 +163,7 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("LOGOUT", use_container_width=True):
+        st.query_params.clear()
         st.session_state.clear()
         for k, v in SESSION_DEFAULTS.items():
             st.session_state[k] = v
