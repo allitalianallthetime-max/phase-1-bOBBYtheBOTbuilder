@@ -55,7 +55,8 @@ _defaults = {
     "logged_in": False, "user_email": "", "user_name": "", "tier": "",
     "jwt_token": "", "active_task": None, "vault_data": None,
     "active_tab": "forge", "scan_task": None, "scan_attempts": 0,
-    "forge_attempts": 0, "landing_warmed": False, "services_warmed": False,
+    "forge_attempts": 0, "mechanic_task": None, "mechanic_attempts": 0,
+    "landing_warmed": False, "services_warmed": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -353,75 +354,7 @@ if not st.session_state.logged_in:
         </div>
     """, unsafe_allow_html=True)
 
-    # ── PRICING ──
-    st.markdown("""
-        <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>Choose Your Clearance Level</h2>
-          <p style='color:#64748B; font-size:14px;'>Every tier includes full Round Table access</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:1px solid #94A3B8; text-align:center;'>
-              <div style='color:#94A3B8; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>STARTER</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $25<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                25 blueprint builds per month<br>Full Round Table access<br>
-                Technical schematics<br>Equipment scanner<br>Blueprint downloads</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.link_button("⚡ GET STARTER", STRIPE_STARTER, use_container_width=True)
-    with t2:
-        st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:2px solid #FF4500; text-align:center;
-                        box-shadow:0 0 20px rgba(255,69,0,0.15);'>
-              <div style='color:#FF4500; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>PRO &#9733; MOST POPULAR</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $100<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                100 blueprint builds per month<br>Everything in Starter<br>
-                Priority processing<br>Conception DNA insights<br>Best value per build</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.link_button("🔥 GET PRO", STRIPE_PRO, use_container_width=True)
-    with t3:
-        st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:1px solid #FFD700; text-align:center;'>
-              <div style='color:#FFD700; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>MASTER</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $999<span style='font-size:16px; color:#94A3B8;'>/yr</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                Unlimited builds forever<br>Everything in Pro<br>
-                Schools &amp; makerspaces<br>Direct Conception access<br>Annual lock-in savings</div>
-            </div>
-        """, unsafe_allow_html=True)
-        st.link_button("👑 GET MASTER", STRIPE_MASTER, use_container_width=True)
-
-    # ── THE STORY ──
-    st.markdown("""
-        <div style='max-width:700px; margin:40px auto; text-align:center; padding:0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:24px; margin-bottom:12px;'>Built From Scraps. Literally.</h2>
-          <p style='color:#94A3B8; font-size:14px; line-height:1.8;'>
-            The Builder Foundry was created by a self-taught developer who pieces together
-            computers from parts and builds things from scrap. No CS degree. No funding.
-            Just a passion for engineering and a refusal to stop learning.<br><br>
-            This is Phase 1 of <strong style='color:#FF4500;'>Conception</strong> —
-            an advanced AI being built to learn from every blueprint, protect families,
-            run businesses, and eventually walk in a physical body.<br><br>
-            Every blueprint you forge makes Conception smarter.</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ── FREE TRIAL ──
+    # ── FREE TRIAL (above pricing — first thing visitors see after the pitch) ──
     st.markdown("---")
     st.markdown("""
         <div style='text-align:center; margin:20px 0 12px;'>
@@ -465,6 +398,74 @@ if not st.session_state.logged_in:
                         trial_key = result.get("key", "")
                         st.success(f"Your license key: **{trial_key}**")
                         st.info("Copy this key and use it to log in below. You have 1 free build and 7 days!")
+
+    # ── PRICING (below free trial — for people ready to buy) ──
+    st.markdown("""
+        <div style='text-align:center; margin:40px 0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>Want More Builds?</h2>
+          <p style='color:#64748B; font-size:14px;'>Every tier includes full Round Table access</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        st.markdown("""
+            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+                        border:1px solid #94A3B8; text-align:center;'>
+              <div style='color:#94A3B8; font-size:12px; font-weight:bold;
+                          letter-spacing:2px;'>STARTER</div>
+              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
+                $25<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
+              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
+                25 blueprint builds per month<br>Full Round Table access<br>
+                Technical schematics<br>Equipment scanner<br>Blueprint downloads</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("⚡ GET STARTER", STRIPE_STARTER, use_container_width=True)
+    with p2:
+        st.markdown("""
+            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+                        border:2px solid #FF4500; text-align:center;
+                        box-shadow:0 0 20px rgba(255,69,0,0.15);'>
+              <div style='color:#FF4500; font-size:12px; font-weight:bold;
+                          letter-spacing:2px;'>PRO &#9733; MOST POPULAR</div>
+              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
+                $100<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
+              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
+                100 blueprint builds per month<br>Everything in Starter<br>
+                Priority processing<br>Conception DNA insights<br>Best value per build</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("🔥 GET PRO", STRIPE_PRO, use_container_width=True)
+    with p3:
+        st.markdown("""
+            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+                        border:1px solid #FFD700; text-align:center;'>
+              <div style='color:#FFD700; font-size:12px; font-weight:bold;
+                          letter-spacing:2px;'>MASTER</div>
+              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
+                $999<span style='font-size:16px; color:#94A3B8;'>/yr</span></div>
+              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
+                Unlimited builds forever<br>Everything in Pro<br>
+                Schools &amp; makerspaces<br>Direct Conception access<br>Annual lock-in savings</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("👑 GET MASTER", STRIPE_MASTER, use_container_width=True)
+
+    # ── THE STORY ──
+    st.markdown("""
+        <div style='max-width:700px; margin:40px auto; text-align:center; padding:0 20px;'>
+          <h2 style='color:#E2E8F0; font-size:24px; margin-bottom:12px;'>Built From Scraps. Literally.</h2>
+          <p style='color:#94A3B8; font-size:14px; line-height:1.8;'>
+            The Builder Foundry was created by a self-taught developer who pieces together
+            computers from parts and builds things from scrap. No CS degree. No funding.
+            Just a passion for engineering and a refusal to stop learning.<br><br>
+            This is Phase 1 of <strong style='color:#FF4500;'>Conception</strong> —
+            an advanced AI being built to learn from every blueprint, protect families,
+            run businesses, and eventually walk in a physical body.<br><br>
+            Every blueprint you forge makes Conception smarter.</p>
+        </div>
+    """, unsafe_allow_html=True)
 
     # ── LOGIN ──
     st.markdown("---")
@@ -560,6 +561,8 @@ with st.sidebar:
         st.session_state.vault_data = None
     if st.button("🔬  EQUIPMENT SCANNER", use_container_width=True):
         st.session_state.active_tab = "scanner"
+    if st.button("🔧  FIELD MECHANIC",  use_container_width=True):
+        st.session_state.active_tab = "mechanic"
     if st.button("🧠  CONCEPTION DNA",    use_container_width=True):
         st.session_state.active_tab = "conception"
     if st.button("💬  ARENA CHAT",        use_container_width=True):
@@ -986,6 +989,188 @@ elif st.session_state.active_tab == "conception":
         milestones = [10, 50, 100, 200, 500]
         next_m = next((m for m in milestones if m > total), 500)
         st.info(f"**{next_m - total} more blueprints** until the next evolution milestone ({next_m} total).")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB: FIELD MECHANIC
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.active_tab == "mechanic":
+    st.markdown("### 🔧 FIELD MECHANIC — AI REPAIR ASSISTANT")
+    st.markdown("""
+        <div style='background:#1E293B; padding:16px; border-radius:8px;
+                    border-left:4px solid #F59E0B; margin-bottom:16px;'>
+          <div style='color:#F59E0B; font-size:13px; font-weight:bold;'>
+            BUILT FOR THE FIELD</div>
+          <div style='color:#94A3B8; font-size:13px; margin-top:4px;'>
+            Stranded on the ocean? Remote job site? No parts store for 100 miles?<br>
+            Tell us your engine, the problem, and what tools you have. We'll give you
+            a step-by-step repair procedure using ONLY what's available — plus an
+            emergency jury-rig to get you home safe.</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    col_left, col_right = st.columns([2, 1])
+
+    with col_left:
+        engine_input = st.text_input(
+            "ENGINE / EQUIPMENT",
+            placeholder="e.g., Cummins 6BTA 5.9 Marine Diesel, CAT 3126, Yanmar 6LY-STE",
+            max_chars=200
+        )
+        symptom_input = st.text_area(
+            "SYMPTOM / FAULT CODE / WHAT'S WRONG",
+            placeholder=(
+                "Describe exactly what's happening...\n"
+                "e.g., Low oil pressure alarm at idle, black smoke under load, P0171 lean code,\n"
+                "engine cranks but won't start, overheating at 2000 RPM, raw water pump leaking"
+            ),
+            height=180, max_chars=3000
+        )
+        tools_input = st.text_area(
+            "TOOLS & SPARE PARTS ON HAND",
+            placeholder=(
+                "List everything you have available RIGHT NOW...\n"
+                "e.g., Basic hand tools, multimeter, spare oil filter, 15W-40 oil,\n"
+                "marine sealant, zip ties, hose clamps, JB Weld, spare impeller"
+            ),
+            height=140, max_chars=3000
+        )
+
+    with col_right:
+        st.markdown("### REPAIR PARAMETERS")
+        environment = st.selectbox(
+            "ENVIRONMENT",
+            ["Marine / Boat", "Heavy Equipment", "Agricultural", "Automotive",
+             "Generator / Stationary", "HVAC / Refrigeration", "Other"]
+        )
+        mech_detail = st.select_slider(
+            "DIAGNOSTIC DEPTH",
+            options=["Standard", "Industrial", "Experimental"]
+        )
+        st.markdown("&nbsp;")
+
+        st.markdown("""
+            <div style='background:#1E293B; padding:12px; border-radius:6px;
+                        border:1px solid #334155; margin-bottom:12px;'>
+              <div style='color:#F59E0B; font-size:11px; font-weight:bold;
+                          letter-spacing:1px;'>WHAT YOU GET</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:6px; line-height:1.6;'>
+                &#9654; Diagnostic flowchart<br>
+                &#9654; Step-by-step field repair<br>
+                &#9654; Torque specs &amp; measurements<br>
+                &#9654; Emergency jury-rig option<br>
+                &#9654; "Do NOT do this" warnings<br>
+                &#9654; Parts list for when you reach port</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        diagnose = st.button("🔧 DIAGNOSE & REPAIR", use_container_width=True)
+
+        if diagnose:
+            if not engine_input or not engine_input.strip():
+                st.error("Enter the engine or equipment model.")
+            elif not symptom_input or not symptom_input.strip():
+                st.error("Describe the symptom or fault.")
+            elif len(symptom_input.strip()) < 10:
+                st.error("Give more detail about the problem.")
+            else:
+                # Combine engine + symptom + environment into project_type
+                project_desc = (
+                    f"ENGINE: {engine_input.strip()}\n"
+                    f"ENVIRONMENT: {environment}\n"
+                    f"SYMPTOM: {symptom_input.strip()}"
+                )
+                # Tools go into junk_desc field (repurposed for mechanic mode)
+                tools_desc = tools_input.strip() if tools_input else "Basic hand tools only"
+
+                with st.spinner("Waking diagnostic agents..."):
+                    awake = ping_service(f"{AI_URL}/health", timeout=10.0)
+                    if not awake:
+                        import time as _t
+                        _t.sleep(3)
+                        awake = ping_service(f"{AI_URL}/health", timeout=15.0)
+
+                if not awake:
+                    st.warning("AI service is starting up. Click DIAGNOSE again in 10 seconds.")
+                else:
+                    with st.spinner("Initiating diagnostic protocols..."):
+                        result = api_post(f"{AI_URL}/generate", {
+                            "junk_desc":    tools_desc,
+                            "project_type": project_desc,
+                            "detail_level": mech_detail,
+                            "user_email":   st.session_state.user_email,
+                            "mode":         "mechanic",
+                        }, timeout=60.0)
+
+                        if isinstance(result, APIError):
+                            if result.status == 429:
+                                st.warning("Too many requests. Wait a few minutes.")
+                            else:
+                                st.error(result.detail)
+                        else:
+                            st.session_state.mechanic_task = result.get("task_id")
+                            st.session_state.mechanic_attempts = 0
+                            st.success("Diagnostic agents deployed...")
+
+    # ── MECHANIC TASK POLLING ──
+    if st.session_state.mechanic_task:
+        max_mech_attempts = 40
+
+        if st.session_state.mechanic_attempts >= max_mech_attempts:
+            st.error("Diagnosis timed out. Try again or simplify the symptoms.")
+            st.session_state.mechanic_task = None
+            st.session_state.mechanic_attempts = 0
+        else:
+            st.markdown("---")
+            st.markdown("### DIAGNOSTIC LOG")
+            task_id = st.session_state.mechanic_task
+
+            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
+
+            if isinstance(result, APIError):
+                st.warning(f"Polling interrupted: {result.detail}")
+                st.session_state.mechanic_attempts += 1
+                time.sleep(5)
+                st.rerun()
+            else:
+                state = result.get("status")
+
+                if state == "complete":
+                    st.balloons()
+                    st.markdown("#### REPAIR PROCEDURE READY")
+
+                    res       = result.get("result", {})
+                    procedure = res.get("content", "")
+                    build_id  = res.get("build_id", "")
+
+                    st.markdown(procedure)
+                    if build_id:
+                        _download_buttons(build_id, key_suffix="_mech")
+                    st.info("Repair procedure archived in Conception DNA Vault.")
+                    st.session_state.mechanic_task = None
+                    st.session_state.mechanic_attempts = 0
+
+                elif state == "failed":
+                    st.error("Diagnostic agents could not reach consensus. Try simplifying the symptoms.")
+                    st.session_state.mechanic_task = None
+                    st.session_state.mechanic_attempts = 0
+
+                else:
+                    msg = result.get("message", "Analyzing engine data...")
+                    elapsed = st.session_state.mechanic_attempts * 3
+                    st.markdown(f"""
+                        <div style='background:#1E293B; padding:16px; border-radius:8px;
+                                    border-left:4px solid #F59E0B; margin:8px 0;'>
+                          <div style='color:#F59E0B; font-size:13px; font-weight:bold;
+                                      font-family:monospace; letter-spacing:1px;'>
+                            DIAGNOSTIC ACTIVE ({elapsed}s)</div>
+                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
+                            {html.escape(msg)}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    st.session_state.mechanic_attempts += 1
+                    time.sleep(3)
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
