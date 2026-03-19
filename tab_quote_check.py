@@ -121,7 +121,7 @@ def render():
                             st.success("Analyzing your quote...")
 
     # ── QUOTE CHECK POLLING ──
-    _poll_task(
+    poll_task(
         task_key="quote_task", attempts_key="quote_attempts",
         status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="QUOTE ANALYSIS", color="#10B981",
