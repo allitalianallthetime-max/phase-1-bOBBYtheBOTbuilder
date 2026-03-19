@@ -42,9 +42,14 @@ AI_URL         = os.getenv("AI_SERVICE_URL",        "http://localhost:8002")
 WORKSHOP_URL   = os.getenv("WORKSHOP_SERVICE_URL",  "http://localhost:8003")
 EXPORT_URL     = os.getenv("EXPORT_SERVICE_URL",    "http://localhost:8004")
 BILLING_URL    = os.getenv("BILLING_SERVICE_URL",   "http://localhost:8006")
-STRIPE_STARTER = os.getenv("STRIPE_URL_STARTER",    "#")
-STRIPE_PRO     = os.getenv("STRIPE_URL_PRO",        "#")
-STRIPE_MASTER  = os.getenv("STRIPE_URL_MASTER",     "#")
+# Token packs (one-time purchase)
+STRIPE_SPARK    = os.getenv("STRIPE_URL_SPARK",     "#")
+STRIPE_BUILDER  = os.getenv("STRIPE_URL_BUILDER",   "#")
+STRIPE_FOUNDRY  = os.getenv("STRIPE_URL_FOUNDRY",   "#")
+STRIPE_SHOPPASS = os.getenv("STRIPE_URL_SHOPPASS",   "#")
+# Subscriptions
+STRIPE_PRO_SUB    = os.getenv("STRIPE_URL_PRO_SUB",     "#")
+STRIPE_MASTER_SUB = os.getenv("STRIPE_URL_MASTER_SUB",  "#")
 
 # ── APPLY THEME ────────────────────────────────────────────────────────────────
 if BUILDER_CSS:
@@ -56,6 +61,7 @@ _defaults = {
     "jwt_token": "", "active_task": None, "vault_data": None,
     "active_tab": "forge", "scan_task": None, "scan_attempts": 0,
     "forge_attempts": 0, "mechanic_task": None, "mechanic_attempts": 0,
+    "quote_task": None, "quote_attempts": 0,
     "landing_warmed": False, "services_warmed": False,
 }
 for k, v in _defaults.items():
@@ -399,58 +405,106 @@ if not st.session_state.logged_in:
                         st.success(f"Your license key: **{trial_key}**")
                         st.info("Copy this key and use it to log in below. You have 1 free build and 7 days!")
 
-    # ── PRICING (below free trial — for people ready to buy) ──
+    # ── TOKEN PACKS ──
     st.markdown("""
-        <div style='text-align:center; margin:40px 0 20px;'>
-          <h2 style='color:#E2E8F0; font-size:28px;'>Want More Builds?</h2>
-          <p style='color:#64748B; font-size:14px;'>Every tier includes full Round Table access</p>
+        <div style='text-align:center; margin:40px 0 12px;'>
+          <h2 style='color:#E2E8F0; font-size:28px;'>Buy Tokens — Pay Per Build</h2>
+          <p style='color:#64748B; font-size:14px;'>No subscription. No commitment. Tokens never expire.</p>
+          <p style='color:#94A3B8; font-size:12px; margin-top:4px;'>
+            Standard builds = 1⚡ &nbsp;|&nbsp; Industrial = 3⚡ &nbsp;|&nbsp; Experimental = 5⚡</p>
         </div>
     """, unsafe_allow_html=True)
 
-    p1, p2, p3 = st.columns(3)
-    with p1:
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
         st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:1px solid #94A3B8; text-align:center;'>
-              <div style='color:#94A3B8; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>STARTER</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $25<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                25 blueprint builds per month<br>Full Round Table access<br>
-                Technical schematics<br>Equipment scanner<br>Blueprint downloads</div>
+            <div style='background:#1E293B; padding:24px 16px; border-radius:8px;
+                        border:1px solid #334155; text-align:center;'>
+              <div style='color:#94A3B8; font-size:11px; font-weight:bold;
+                          letter-spacing:2px;'>SPARK</div>
+              <div style='color:white; font-size:32px; font-weight:bold; margin:8px 0;'>
+                3⚡</div>
+              <div style='color:#FF4500; font-size:24px; font-weight:bold;'>$9.99</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>$3.33 per token</div>
             </div>
         """, unsafe_allow_html=True)
-        st.link_button("⚡ GET STARTER", STRIPE_STARTER, use_container_width=True)
-    with p2:
+        st.link_button("⚡ GET SPARK", STRIPE_SPARK, use_container_width=True)
+    with k2:
         st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
+            <div style='background:#1E293B; padding:24px 16px; border-radius:8px;
                         border:2px solid #FF4500; text-align:center;
                         box-shadow:0 0 20px rgba(255,69,0,0.15);'>
-              <div style='color:#FF4500; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>PRO &#9733; MOST POPULAR</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $100<span style='font-size:16px; color:#94A3B8;'>/mo</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                100 blueprint builds per month<br>Everything in Starter<br>
-                Priority processing<br>Conception DNA insights<br>Best value per build</div>
+              <div style='color:#FF4500; font-size:11px; font-weight:bold;
+                          letter-spacing:2px;'>BUILDER ★</div>
+              <div style='color:white; font-size:32px; font-weight:bold; margin:8px 0;'>
+                10⚡</div>
+              <div style='color:#FF4500; font-size:24px; font-weight:bold;'>$24.99</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>$2.50 per token</div>
             </div>
         """, unsafe_allow_html=True)
-        st.link_button("🔥 GET PRO", STRIPE_PRO, use_container_width=True)
-    with p3:
+        st.link_button("🔥 GET BUILDER", STRIPE_BUILDER, use_container_width=True)
+    with k3:
         st.markdown("""
-            <div style='background:#1E293B; padding:28px 20px; border-radius:8px;
-                        border:1px solid #FFD700; text-align:center;'>
-              <div style='color:#FFD700; font-size:12px; font-weight:bold;
-                          letter-spacing:2px;'>MASTER</div>
-              <div style='color:white; font-size:36px; font-weight:bold; margin:12px 0;'>
-                $999<span style='font-size:16px; color:#94A3B8;'>/yr</span></div>
-              <div style='color:#64748B; font-size:13px; margin-bottom:16px;'>
-                Unlimited builds forever<br>Everything in Pro<br>
-                Schools &amp; makerspaces<br>Direct Conception access<br>Annual lock-in savings</div>
+            <div style='background:#1E293B; padding:24px 16px; border-radius:8px;
+                        border:1px solid #334155; text-align:center;'>
+              <div style='color:#10B981; font-size:11px; font-weight:bold;
+                          letter-spacing:2px;'>FOUNDRY</div>
+              <div style='color:white; font-size:32px; font-weight:bold; margin:8px 0;'>
+                30⚡</div>
+              <div style='color:#10B981; font-size:24px; font-weight:bold;'>$59.99</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>$2.00 per token</div>
             </div>
         """, unsafe_allow_html=True)
-        st.link_button("👑 GET MASTER", STRIPE_MASTER, use_container_width=True)
+        st.link_button("🔧 GET FOUNDRY", STRIPE_FOUNDRY, use_container_width=True)
+    with k4:
+        st.markdown("""
+            <div style='background:#1E293B; padding:24px 16px; border-radius:8px;
+                        border:1px solid #FFD700; text-align:center;'>
+              <div style='color:#FFD700; font-size:11px; font-weight:bold;
+                          letter-spacing:2px;'>SHOP PASS</div>
+              <div style='color:white; font-size:32px; font-weight:bold; margin:8px 0;'>
+                100⚡</div>
+              <div style='color:#FFD700; font-size:24px; font-weight:bold;'>$149.99</div>
+              <div style='color:#64748B; font-size:12px; margin-top:4px;'>$1.50 per token</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("👑 GET SHOP PASS", STRIPE_SHOPPASS, use_container_width=True)
+
+    # ── SUBSCRIPTIONS ──
+    st.markdown("""
+        <div style='text-align:center; margin:30px 0 12px;'>
+          <h3 style='color:#94A3B8; font-size:20px;'>Build All The Time? Subscribe &amp; Save</h3>
+          <p style='color:#64748B; font-size:13px;'>Monthly token refill. Unused tokens roll over forever. Cancel anytime.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    s1, s2, s3 = st.columns([1, 1, 1])
+    with s1:
+        st.markdown("&nbsp;")
+    with s2:
+        st.markdown("""
+            <div style='background:#1E293B; padding:20px; border-radius:8px;
+                        border:1px solid #3B82F6; text-align:center;'>
+              <div style='color:#3B82F6; font-size:11px; font-weight:bold;
+                          letter-spacing:2px;'>PRO — 20⚡/MONTH</div>
+              <div style='color:white; font-size:28px; font-weight:bold; margin:8px 0;'>
+                $29.99<span style='font-size:14px; color:#94A3B8;'>/mo</span></div>
+              <div style='color:#64748B; font-size:12px;'>$1.50/token &bull; Unlimited rollover</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("📋 SUBSCRIBE PRO", STRIPE_PRO_SUB, use_container_width=True)
+    with s3:
+        st.markdown("""
+            <div style='background:#1E293B; padding:20px; border-radius:8px;
+                        border:1px solid #A855F7; text-align:center;'>
+              <div style='color:#A855F7; font-size:11px; font-weight:bold;
+                          letter-spacing:2px;'>MASTER — 60⚡/MONTH</div>
+              <div style='color:white; font-size:28px; font-weight:bold; margin:8px 0;'>
+                $74.99<span style='font-size:14px; color:#94A3B8;'>/mo</span></div>
+              <div style='color:#64748B; font-size:12px;'>$1.25/token &bull; Unlimited rollover</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.link_button("🚀 SUBSCRIBE MASTER", STRIPE_MASTER_SUB, use_container_width=True)
 
     # ── THE STORY ──
     st.markdown("""
@@ -503,7 +557,7 @@ if not st.session_state.logged_in:
                             st.session_state.jwt_token  = result["token"]
                             st.rerun()
         with col_b:
-            st.link_button("GET A LICENSE", STRIPE_STARTER, use_container_width=True)
+            st.link_button("BUY TOKENS", STRIPE_SPARK, use_container_width=True)
 
     # ── FOOTER ──
     st.markdown("""
@@ -563,45 +617,42 @@ with st.sidebar:
         st.session_state.active_tab = "scanner"
     if st.button("🔧  FIELD MECHANIC",  use_container_width=True):
         st.session_state.active_tab = "mechanic"
+    if st.button("🛡️  QUOTE CHECK",    use_container_width=True):
+        st.session_state.active_tab = "quote_check"
     if st.button("🧠  CONCEPTION DNA",    use_container_width=True):
         st.session_state.active_tab = "conception"
+    if st.button("👤  MY PROFILE",      use_container_width=True):
+        st.session_state.active_tab = "profile"
     if st.button("💬  ARENA CHAT",        use_container_width=True):
         st.session_state.active_tab = "chat"
 
     st.markdown("---")
 
-    # Quota meter
-    q = api_get(f"{BILLING_URL}/billing/quota/{st.session_state.user_email}", timeout=5.0)
+    # Token balance
+    q = api_get(f"{BILLING_URL}/billing/tokens/{st.session_state.user_email}", timeout=5.0)
     if not isinstance(q, APIError):
-        used  = q.get("build_count", 0)
-        limit = q.get("build_limit", 25)
-        pct   = min(used / max(limit, 1), 1.0)
-        bar_color = "#FF4500" if pct > 0.8 else "#1D9E75"
+        balance  = q.get("token_balance", 0)
+        sub_tier = q.get("sub_tier")
+        token_color = "#10B981" if balance > 5 else "#F59E0B" if balance > 0 else "#EF4444"
         st.markdown(f"""
-            <div style='font-size:11px; color:#94A3B8; margin-bottom:4px;'>
-              BUILD QUOTA: {used} / {limit}</div>
-            <div style='background:#1E293B; border-radius:4px; height:8px;'>
-              <div style='background:{bar_color}; width:{pct*100:.0f}%;
-                          height:8px; border-radius:4px;'></div>
+            <div style='text-align:center; margin:8px 0;'>
+              <div style='color:#94A3B8; font-size:10px; letter-spacing:2px;'>TOKENS</div>
+              <div style='color:{token_color}; font-size:36px; font-weight:bold;'>
+                {balance}⚡</div>
+              {f"<div style='color:#F59E0B; font-size:10px;'>{sub_tier.upper()} SUBSCRIBER</div>" if sub_tier else ""}
             </div>
         """, unsafe_allow_html=True)
-        if pct >= 1.0:
-            st.error("Quota exhausted.")
-            if st.session_state.tier == "trial":
-                st.markdown("""
-                    <div style='background:#1E293B; padding:12px; border-radius:6px;
-                                border:1px solid #10B981; text-align:center; margin:8px 0;'>
-                      <div style='color:#10B981; font-size:12px; font-weight:bold;'>
-                        Your free build is used!</div>
-                      <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
-                        Upgrade to keep forging blueprints</div>
-                    </div>
-                """, unsafe_allow_html=True)
-                st.link_button("GET STARTER $25/mo", STRIPE_STARTER, use_container_width=True)
-            elif st.session_state.tier == "starter":
-                st.link_button("UPGRADE TO PRO", STRIPE_PRO, use_container_width=True)
-            elif st.session_state.tier == "pro":
-                st.link_button("UPGRADE TO MASTER", STRIPE_MASTER, use_container_width=True)
+        if balance == 0:
+            st.markdown("""
+                <div style='background:#1E293B; padding:12px; border-radius:6px;
+                            border:1px solid #EF4444; text-align:center; margin:8px 0;'>
+                  <div style='color:#EF4444; font-size:12px; font-weight:bold;'>
+                    No tokens remaining</div>
+                  <div style='color:#94A3B8; font-size:11px; margin-top:4px;'>
+                    Buy tokens to keep forging</div>
+                </div>
+            """, unsafe_allow_html=True)
+        st.link_button("⚡ BUY TOKENS", STRIPE_SPARK, use_container_width=True)
 
     st.markdown("---")
     if st.button("LOGOUT", use_container_width=True):
@@ -651,7 +702,15 @@ if st.session_state.active_tab == "forge":
             "SPECIFICATION DEPTH",
             options=["Standard", "Industrial", "Experimental"]
         )
-        st.markdown("&nbsp;")
+        _forge_cost = {"Standard": 1, "Industrial": 3, "Experimental": 5}
+        _fc = _forge_cost.get(detail_level, 1)
+        st.markdown(f"""
+            <div style='background:#1E293B; padding:10px; border-radius:6px;
+                        text-align:center; margin:8px 0;'>
+              <span style='color:#F59E0B; font-size:18px; font-weight:bold;'>{_fc}⚡</span>
+              <span style='color:#94A3B8; font-size:12px;'> tokens for {detail_level}</span>
+            </div>
+        """, unsafe_allow_html=True)
         forge = st.button("🚀 FORGE BLUEPRINT", use_container_width=True)
 
         if forge:
@@ -1078,7 +1137,15 @@ elif st.session_state.active_tab == "mechanic":
             "DIAGNOSTIC DEPTH",
             options=["Standard", "Industrial", "Experimental"]
         )
-        st.markdown("&nbsp;")
+        _mech_cost = {"Standard": 1, "Industrial": 3, "Experimental": 5}
+        _mc = _mech_cost.get(mech_detail, 1)
+        st.markdown(f"""
+            <div style='background:#1E293B; padding:10px; border-radius:6px;
+                        text-align:center; margin:8px 0;'>
+              <span style='color:#F59E0B; font-size:18px; font-weight:bold;'>{_mc}⚡</span>
+              <span style='color:#94A3B8; font-size:12px;'> tokens for {mech_detail}</span>
+            </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("""
             <div style='background:#1E293B; padding:12px; border-radius:6px;
@@ -1222,6 +1289,311 @@ elif st.session_state.active_tab == "mechanic":
                     st.session_state.mechanic_attempts += 1
                     time.sleep(3)
                     st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB: QUOTE CHECK
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.active_tab == "quote_check":
+    st.markdown("### 🛡️ QUOTE CHECK — IS YOUR MECHANIC'S PRICE FAIR?")
+    st.markdown("""
+        <div style='background:#1E293B; padding:16px; border-radius:8px;
+                    border-left:4px solid #10B981; margin-bottom:16px;'>
+          <div style='color:#10B981; font-size:13px; font-weight:bold;'>
+            PROTECT YOUR WALLET</div>
+          <div style='color:#94A3B8; font-size:13px; margin-top:4px;'>
+            Got a repair quote? We'll check it against real repair data, find
+            recalls and extended warranties, and tell you if the price is fair —
+            or if you're getting ripped off.</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    col_left, col_right = st.columns([2, 1])
+
+    with col_left:
+        r1a, r1b = st.columns(2)
+        with r1a:
+            qc_vehicle = st.text_input("YEAR / MAKE / MODEL",
+                placeholder="e.g., 2022 Toyota Highlander", max_chars=200, key="qc_vehicle")
+        with r1b:
+            qc_mileage = st.text_input("MILEAGE",
+                placeholder="e.g., 42,000 miles", max_chars=100, key="qc_mileage")
+
+        qc_repair = st.text_input("WHAT THEY SAID IS WRONG",
+            placeholder="e.g., AC condenser leak, needs full replacement", max_chars=500, key="qc_repair")
+
+        r2a, r2b = st.columns(2)
+        with r2a:
+            qc_quoted = st.text_input("WHAT THEY QUOTED YOU ($)",
+                placeholder="e.g., 2400", max_chars=20, key="qc_quoted")
+        with r2b:
+            qc_shop = st.text_input("SHOP TYPE (optional)",
+                placeholder="e.g., Dealer, Independent, Chain", max_chars=100, key="qc_shop")
+
+        qc_estimate = st.text_area("PASTE THEIR ESTIMATE (optional)",
+            placeholder="If they gave you an itemized list, paste it here...",
+            height=100, max_chars=3000, key="qc_estimate")
+
+    with col_right:
+        st.markdown("""
+            <div style='background:#1E293B; padding:12px; border-radius:6px;
+                        border:1px solid #10B981; margin-bottom:12px;'>
+              <div style='color:#10B981; font-size:11px; font-weight:bold;
+                          letter-spacing:1px;'>WHAT YOU GET</div>
+              <div style='color:#94A3B8; font-size:12px; margin-top:6px; line-height:1.6;'>
+                &#9654; Fair price range for your repair<br>
+                &#9654; Recall &amp; warranty check<br>
+                &#9654; Real parts pricing from suppliers<br>
+                &#9654; What to say to push back<br>
+                &#9654; Community data from real repairs<br>
+                &#9654; NHTSA complaint history</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("""
+            <div style='background:#1E293B; padding:10px; border-radius:6px;
+                        text-align:center; margin:8px 0;'>
+              <span style='color:#F59E0B; font-size:18px; font-weight:bold;'>1⚡</span>
+              <span style='color:#94A3B8; font-size:12px;'> token per quote check</span>
+            </div>
+        """, unsafe_allow_html=True)
+
+        qc_go = st.button("🛡️ CHECK THIS QUOTE", use_container_width=True)
+
+        if qc_go:
+            if not qc_vehicle or not qc_vehicle.strip():
+                st.error("Enter the vehicle year, make, and model.")
+            elif not qc_repair or not qc_repair.strip():
+                st.error("Describe what the mechanic said is wrong.")
+            elif not qc_quoted or not qc_quoted.strip():
+                st.error("Enter the dollar amount they quoted you.")
+            else:
+                project_desc = (
+                    f"VEHICLE: {qc_vehicle.strip()}\n"
+                    f"MILEAGE: {qc_mileage.strip() or 'Not specified'}\n"
+                    f"REPAIR: {qc_repair.strip()}\n"
+                    f"QUOTED: ${qc_quoted.strip()}\n"
+                    f"SHOP TYPE: {qc_shop.strip() or 'Not specified'}\n"
+                    + (f"ITEMIZED ESTIMATE:\n{qc_estimate.strip()}" if qc_estimate else "")
+                )
+
+                with st.spinner("Checking quote against real repair data..."):
+                    awake = ping_service(f"{AI_URL}/health", timeout=10.0)
+                    if not awake:
+                        import time as _t
+                        _t.sleep(3)
+                        awake = ping_service(f"{AI_URL}/health", timeout=15.0)
+
+                if not awake:
+                    st.warning("AI service starting up. Click again in 10 seconds.")
+                else:
+                    with st.spinner("Analyzing quote..."):
+                        result = api_post(f"{AI_URL}/generate", {
+                            "junk_desc": "", "project_type": project_desc,
+                            "detail_level": "Standard",
+                            "user_email": st.session_state.user_email,
+                            "mode": "quote_check",
+                        }, timeout=60.0)
+                        if isinstance(result, APIError):
+                            st.error(result.detail)
+                        else:
+                            st.session_state.quote_task = result.get("task_id")
+                            st.session_state.quote_attempts = 0
+                            st.success("Analyzing your quote...")
+
+    # ── QUOTE CHECK POLLING ──
+    if st.session_state.quote_task:
+        max_qc_attempts = 40
+        if st.session_state.quote_attempts >= max_qc_attempts:
+            st.error("Analysis timed out. Try again.")
+            st.session_state.quote_task = None
+            st.session_state.quote_attempts = 0
+        else:
+            st.markdown("---")
+            task_id = st.session_state.quote_task
+            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
+
+            if isinstance(result, APIError):
+                st.session_state.quote_attempts += 1
+                time.sleep(5)
+                st.rerun()
+            else:
+                state = result.get("status")
+                if state == "complete":
+                    st.balloons()
+                    res = result.get("result", {})
+                    st.markdown(res.get("content", ""))
+                    if res.get("build_id"):
+                        _download_buttons(res["build_id"], key_suffix="_qc")
+                    st.session_state.quote_task = None
+                    st.session_state.quote_attempts = 0
+                elif state == "failed":
+                    st.error("Quote analysis failed. Try again.")
+                    st.session_state.quote_task = None
+                    st.session_state.quote_attempts = 0
+                else:
+                    msg = result.get("message", "Analyzing quote...")
+                    elapsed = st.session_state.quote_attempts * 3
+                    st.markdown(f"""
+                        <div style='background:#1E293B; padding:16px; border-radius:8px;
+                                    border-left:4px solid #10B981; margin:8px 0;'>
+                          <div style='color:#10B981; font-size:13px; font-weight:bold;'>
+                            QUOTE ANALYSIS ({elapsed}s)</div>
+                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
+                            {html.escape(msg)}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    st.session_state.quote_attempts += 1
+                    time.sleep(3)
+                    st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB: MY PROFILE
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.active_tab == "profile":
+    st.markdown("### 👤 MY PROFILE")
+
+    # Load profile data
+    profile_data = api_get(f"{AUTH_URL}/profile/{st.session_state.user_email}")
+    if isinstance(profile_data, APIError):
+        profile = None
+        vehicles = []
+        inventory = []
+    else:
+        profile = profile_data.get("profile")
+        vehicles = profile_data.get("vehicles", [])
+        inventory = profile_data.get("inventory", [])
+
+    # ── PROFILE INFO ──
+    st.markdown("#### Business Information")
+    st.caption("Required for invoice generation.")
+
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        p_display = st.text_input("Display Name", value=(profile or {}).get("display_name", ""),
+                                  key="p_display")
+        p_business = st.text_input("Business Name", value=(profile or {}).get("business_name", ""),
+                                   key="p_business")
+        p_phone = st.text_input("Phone", value=(profile or {}).get("phone", ""), key="p_phone")
+    with p_col2:
+        p_location = st.text_input("Location", value=(profile or {}).get("location", ""), key="p_location")
+        p_cert = st.text_input("Certification (ASE, etc.)", value=(profile or {}).get("certification", ""),
+                               key="p_cert")
+        p_rate = st.text_input("Default Labor Rate ($/hr)", value=str((profile or {}).get("default_labor_rate", "")),
+                               key="p_rate")
+
+    if st.button("💾 SAVE PROFILE", use_container_width=True):
+        rate_val = None
+        try:
+            rate_val = float(p_rate) if p_rate else None
+        except ValueError:
+            pass
+        result = api_post(f"{AUTH_URL}/profile/{st.session_state.user_email}", {
+            "display_name": p_display, "business_name": p_business,
+            "phone": p_phone, "location": p_location,
+            "certification": p_cert, "default_labor_rate": rate_val,
+        })
+        if isinstance(result, APIError):
+            st.error(result.detail)
+        else:
+            st.success("Profile saved!")
+
+    # ── MY VEHICLES ──
+    st.markdown("---")
+    st.markdown("#### 🚗 My Vehicles / Equipment")
+    st.caption("Save your vehicles for one-tap diagnostics.")
+
+    if vehicles:
+        for v in vehicles:
+            default_badge = " ⭐ DEFAULT" if v.get("is_default") else ""
+            with st.expander(f"{v.get('nickname') or v.get('make', '?')} — {v.get('year', '')} {v.get('make', '')} {v.get('model', '')}{default_badge}"):
+                st.caption(f"Engine: {v.get('engine', 'N/A')} | Mileage: {v.get('mileage', 'N/A')} | {v.get('environment', '')}")
+                if v.get("notes"):
+                    st.caption(v["notes"])
+                if st.button("🗑️ Remove", key=f"del_v_{v['id']}"):
+                    api_post(f"{AUTH_URL}/profile/{st.session_state.user_email}/vehicle/{v['id']}/delete", {})
+                    st.rerun()
+    else:
+        st.info("No vehicles saved yet.")
+
+    with st.expander("➕ Add Vehicle"):
+        v_nick = st.text_input("Nickname", placeholder="e.g., My Hatteras, Work Truck", key="v_nick")
+        va, vb = st.columns(2)
+        with va:
+            v_year = st.text_input("Year", key="v_year")
+            v_make = st.text_input("Make", key="v_make")
+            v_model = st.text_input("Model", key="v_model")
+        with vb:
+            v_engine = st.text_input("Engine", key="v_engine")
+            v_miles = st.text_input("Mileage/Hours", key="v_miles")
+            v_env = st.selectbox("Environment", ["Marine / Boat", "Automotive", "Heavy Equipment",
+                "Agricultural", "Generator / Stationary", "Other"], key="v_env")
+        v_default = st.checkbox("Set as default vehicle", key="v_default")
+        if st.button("💾 Save Vehicle", key="save_vehicle"):
+            if v_make or v_model:
+                result = api_post(f"{AUTH_URL}/profile/{st.session_state.user_email}/vehicle", {
+                    "nickname": v_nick, "year": v_year, "make": v_make,
+                    "model": v_model, "engine": v_engine, "mileage": v_miles,
+                    "environment": v_env, "is_default": v_default,
+                })
+                if not isinstance(result, APIError):
+                    st.success("Vehicle saved!")
+                    st.rerun()
+
+    # ── MY GARAGE (inventory) ──
+    st.markdown("---")
+    st.markdown("#### 🏠 My Garage — Saved Inventory")
+    st.caption("Save your junk/parts for quick forge builds.")
+
+    if inventory:
+        for item in inventory:
+            with st.expander(f"🔧 {item.get('item_name', '?')} — {item.get('category', '')}"):
+                st.caption(f"Condition: {item.get('condition', 'N/A')}")
+                if item.get("description"):
+                    st.caption(item["description"])
+                if st.button("🗑️ Remove", key=f"del_i_{item['id']}"):
+                    api_post(f"{AUTH_URL}/profile/{st.session_state.user_email}/inventory/{item['id']}/delete", {})
+                    st.rerun()
+    else:
+        st.info("No inventory items saved. Add items or use the Equipment Scanner.")
+
+    with st.expander("➕ Add Inventory Item"):
+        i_name = st.text_input("Item Name", placeholder="e.g., Old NordicTrack Treadmill", key="i_name")
+        i_desc = st.text_area("Description / Specs", placeholder="Working motor, broken belt, steel frame intact", key="i_desc", height=80)
+        ia, ib = st.columns(2)
+        with ia:
+            i_cat = st.selectbox("Category", ["Motors", "Frames", "Electronics", "Vehicles",
+                "Appliances", "Tools", "Raw Materials", "Other"], key="i_cat")
+        with ib:
+            i_cond = st.selectbox("Condition", ["Working", "Needs Repair", "For Parts Only",
+                "Unknown"], key="i_cond")
+        if st.button("💾 Save Item", key="save_inventory"):
+            if i_name:
+                result = api_post(f"{AUTH_URL}/profile/{st.session_state.user_email}/inventory", {
+                    "item_name": i_name, "description": i_desc,
+                    "category": i_cat, "condition": i_cond,
+                })
+                if not isinstance(result, APIError):
+                    st.success("Item saved to garage!")
+                    st.rerun()
+
+    # ── TOKEN BALANCE ──
+    st.markdown("---")
+    st.markdown("#### ⚡ Token Balance")
+    tok = api_get(f"{BILLING_URL}/billing/tokens/{st.session_state.user_email}", timeout=5.0)
+    if not isinstance(tok, APIError):
+        t_balance = tok.get("token_balance", 0)
+        t_purchased = tok.get("tokens_purchased", 0)
+        t_used = tok.get("tokens_used", 0)
+        t_sub = tok.get("sub_tier")
+        tc1, tc2, tc3 = st.columns(3)
+        tc1.metric("Balance", f"{t_balance}⚡")
+        tc2.metric("Total Purchased", t_purchased)
+        tc3.metric("Total Used", t_used)
+        if t_sub:
+            st.info(f"Active subscription: **{t_sub.upper()}** ({tok.get('sub_tokens_monthly', 0)} tokens/month)")
+        st.link_button("⚡ BUY MORE TOKENS", STRIPE_SPARK, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
