@@ -162,14 +162,16 @@ def render():
                 tools_desc = tools_input.strip() if tools_input else "Basic hand tools only"
 
                 with st.spinner("Waking diagnostic agents..."):
-                    awake = ping_service(f"{AI_URL}/health", timeout=10.0)
-                    if not awake:
-                        import time as _t
-                        _t.sleep(3)
+                    awake = False
+                    for attempt in range(3):
                         awake = ping_service(f"{AI_URL}/health", timeout=15.0)
+                        if awake:
+                            break
+                        import time as _t
+                        _t.sleep(5)
 
                 if not awake:
-                    st.warning("AI service is starting up. Click DIAGNOSE again in 10 seconds.")
+                    st.warning("AI service is waking up — Render cold starts can take 30 seconds. Click DIAGNOSE again.")
                 else:
                     with st.spinner("Initiating diagnostic protocols..."):
                         result = api_post(f"{AI_URL}/generate", {
@@ -194,9 +196,9 @@ def render():
     poll_task(
         task_key="mechanic_task", attempts_key="mechanic_attempts",
         status_base_url=f"{AI_URL}/generate/status/",
-        max_attempts=40, label="DIAGNOSTIC ACTIVE", color="#F59E0B",
+        max_attempts=60, label="DIAGNOSTIC ACTIVE", color="#F59E0B",
         complete_title="REPAIR PROCEDURE READY", dl_suffix="_mech",
-        timeout_msg="Diagnosis timed out. Try again or simplify the symptoms.",
+        timeout_msg="Diagnosis is taking longer than expected. The AI agents are still working — click DIAGNOSE again to retry.",
         fail_msg="Diagnostic agents could not reach consensus. Try simplifying the symptoms.",
         archive_msg="Repair procedure archived in Conception DNA Vault."
     )
