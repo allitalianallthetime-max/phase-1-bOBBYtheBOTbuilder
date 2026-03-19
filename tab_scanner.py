@@ -68,7 +68,7 @@ def render():
             for c in comps:
                 st.markdown(f"- **{c.get('name', '?')}** x {c.get('quantity', '?')}")
 
-        _poll_task(
+        poll_task(
             task_key="scan_task", attempts_key="scan_attempts",
             status_base_url=f"{WORKSHOP_URL}/task/status/",
             max_attempts=20, label="GEMINI VISION ANALYSIS", color="#10B981",
