@@ -177,11 +177,11 @@ FORGE_HEADER_HTML = """
   <!-- TICKER TAPE -->
   <div class="ticker-tape pulse">
     <span>
-      ⚙️ THE BUILDER FOUNDRY IS ALIVE &nbsp;◆&nbsp; 
-      ROUND TABLE ACTIVE &nbsp;◆&nbsp; 
-      GROK-4.2 • CLAUDE SONNET 4 • GEMINI 2.5 &nbsp;◆&nbsp; 
-      CONCEPTION DNA LEARNING &nbsp;◆&nbsp; 
-      ALL SYSTEMS NOMINAL &nbsp;◆&nbsp; 
+      ⚙️ THE BUILDER FOUNDRY IS ALIVE &nbsp;◆&nbsp;
+      ROUND TABLE ACTIVE &nbsp;◆&nbsp;
+      GROK-4.2 • CLAUDE SONNET 4 • GEMINI 2.5 &nbsp;◆&nbsp;
+      CONCEPTION DNA LEARNING &nbsp;◆&nbsp;
+      ALL SYSTEMS NOMINAL &nbsp;◆&nbsp;
       ⚙️ THE BUILDER FOUNDRY IS ALIVE &nbsp;◆&nbsp;
     </span>
   </div>
@@ -214,12 +214,15 @@ FORGE_HEADER_HTML = """
   </div>
 
   <!-- SUB NAV BAR -->
-  <div style="background:rgba(255,69,0,0.08); border-top:1px solid #2A3A52; padding:8px 28px; display:flex; gap:28px; font-size:11px; font-family:'Share Tech Mono',monospace;">
+  <div style="background:rgba(255,69,0,0.08); border-top:1px solid #2A3A52; padding:8px 28px; display:flex; gap:20px; font-size:11px; font-family:'Share Tech Mono',monospace;">
     <span style="color:#FF4500;">⚙ FORGE</span>
     <span style="color:#64748B;">🗄 VAULT</span>
     <span style="color:#64748B;">🔬 SCANNER</span>
+    <span style="color:#10B981;">🔧 MECHANIC</span>
+    <span style="color:#3B82F6;">🛡 QUOTE CHECK</span>
     <span style="color:#64748B;">🧠 DNA</span>
-    <span style="color:#64748B;">🏟 ARENA</span>
+    <span style="color:#64748B;">👤 PROFILE</span>
+    <span style="color:#64748B;">💬 ARENA</span>
   </div>
 </div>
 """
