@@ -96,15 +96,17 @@ def render():
                     + (f"ITEMIZED ESTIMATE:\n{qc_estimate.strip()}" if qc_estimate else "")
                 )
 
-                with st.spinner("Checking quote against real repair data..."):
-                    awake = ping_service(f"{AI_URL}/health", timeout=10.0)
-                    if not awake:
-                        import time as _t
-                        _t.sleep(3)
+                with st.spinner("Waking AI agents..."):
+                    awake = False
+                    for attempt in range(3):
                         awake = ping_service(f"{AI_URL}/health", timeout=15.0)
+                        if awake:
+                            break
+                        import time as _t
+                        _t.sleep(5)
 
                 if not awake:
-                    st.warning("AI service starting up. Click again in 10 seconds.")
+                    st.warning("AI service is waking up — Render cold starts can take 30 seconds. Click again.")
                 else:
                     with st.spinner("Analyzing quote..."):
                         result = api_post(f"{AI_URL}/generate", {
@@ -124,7 +126,7 @@ def render():
     poll_task(
         task_key="quote_task", attempts_key="quote_attempts",
         status_base_url=f"{AI_URL}/generate/status/",
-        max_attempts=40, label="QUOTE ANALYSIS", color="#10B981",
+        max_attempts=60, label="QUOTE ANALYSIS", color="#10B981",
         complete_title="QUOTE ANALYSIS COMPLETE", dl_suffix="_qc",
         timeout_msg="Analysis timed out. Try again.",
         fail_msg="Quote analysis failed. Try again.",
