@@ -362,66 +362,80 @@ def _grok_failed(analysis) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _run_grok_inner(junk_desc: str, project_type: str,
-                          detail_level: str, conception_context: str) -> dict:
+                          detail_level: str, conception_context: str,
+                          mode: str = "blueprint") -> dict:
     if not GROK_KEY:
         return {"analysis": {"components": [], "feasibility_score": 0,
                 "analysis_summary": "Grok offline."}, "tokens": 0}
 
     timeouts = {"Standard": 40.0, "Industrial": 60.0, "Experimental": 80.0}
     max_toks = {"Standard": 2000, "Industrial": 3000, "Experimental": 4000}
-    detail_instructions = {
-        "Standard": "Identify major harvestable components from each item.",
-        "Industrial": (
-            "For each component: specify exact voltages, current ratings, "
-            "torque values, dimensions, weight, material grade. "
-            "Calculate mechanical advantage of gear/belt systems."
-        ),
-        "Experimental": (
-            "Maximum depth. Exact electrical specs, mechanical specs, thermal specs, "
-            "dimensional specs. Identify hidden value: capacitors, rare earth magnets, "
-            "precision surfaces, high-quality bearings. Estimate remaining life span."
-        ),
-    }
 
-    system = (
-        f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
-        f"RULES:\n"
-        f"- PROJECT GOAL = what the user wants to BUILD (they don't have it yet)\n"
-        f"- INVENTORY = physical items the user ALREADY OWNS\n"
-        f"- Analyze each inventory item for harvestable components\n"
-        f"- Mark specs as [KNOWN] or [EST]\n\n"
-        f"CREATIVE ENGINEERING: suggest UNEXPECTED uses for each component. "
-        f"Think about what makes each item UNIQUE.\n\n"
-        f"Detail level: {detail_level}. {detail_instructions.get(detail_level, '')}\n\n"
-        f"Return ONLY valid JSON with this exact structure:\n"
-        f'{{\n'
-        f'  "components": [\n'
-        f'    {{\n'
-        f'      "item_source": "name of inventory item",\n'
-        f'      "harvested_parts": [\n'
-        f'        {{\n'
-        f'          "part": "component name",\n'
-        f'          "specs": "voltage, torque, dimensions etc with [KNOWN]/[EST] tags",\n'
-        f'          "project_use": "how this part serves the project goal",\n'
-        f'          "confidence": "high|medium|low"\n'
-        f'        }}\n'
-        f'      ]\n'
-        f'    }}\n'
-        f'  ],\n'
-        f'  "feasibility_score": 0-100,\n'
-        f'  "critical_gaps": ["list of missing essentials"],\n'
-        f'  "honest_limitations": ["what this build cannot do"],\n'
-        f'  "creative_possibilities": [\n'
-        f'    {{"idea": "description", "why_unique": "why this inventory enables it"}}\n'
-        f'  ],\n'
-        f'  "analysis_summary": "2-3 paragraph prose summary"\n'
-        f'}}\n'
-        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
-    )
+    if mode == "mechanic":
+        system = _mechanic_grok_system(detail_level, conception_context)
+        user_msg = (
+            f"ENGINE/EQUIPMENT:\n{project_type}\n\n"
+            f"SYMPTOM/FAULT:\n{project_type}\n\n"
+            f"AVAILABLE TOOLS & PARTS:\n{_truncate(junk_desc, 3000)}\n\n"
+            f"Diagnose the issue. Return ONLY the JSON structure."
+        )
+    else:
+        detail_instructions = {
+            "Standard": "Identify major harvestable components from each item.",
+            "Industrial": (
+                "For each component: specify exact voltages, current ratings, "
+                "torque values, dimensions, weight, material grade. "
+                "Calculate mechanical advantage of gear/belt systems."
+            ),
+            "Experimental": (
+                "Maximum depth. Exact electrical specs, mechanical specs, thermal specs, "
+                "dimensional specs. Identify hidden value: capacitors, rare earth magnets, "
+                "precision surfaces, high-quality bearings. Estimate remaining life span."
+            ),
+        }
+        system = (
+            f"You are GROK-3, a junkyard engineering genius on AoC3P0 Builder Foundry.\n\n"
+            f"RULES:\n"
+            f"- PROJECT GOAL = what the user wants to BUILD (they don't have it yet)\n"
+            f"- INVENTORY = physical items the user ALREADY OWNS\n"
+            f"- Analyze each inventory item for harvestable components\n"
+            f"- Mark specs as [KNOWN] or [EST]\n\n"
+            f"CREATIVE ENGINEERING: suggest UNEXPECTED uses for each component. "
+            f"Think about what makes each item UNIQUE.\n\n"
+            f"Detail level: {detail_level}. {detail_instructions.get(detail_level, '')}\n\n"
+            f"Return ONLY valid JSON with this exact structure:\n"
+            f'{{\n'
+            f'  "components": [\n'
+            f'    {{\n'
+            f'      "item_source": "name of inventory item",\n'
+            f'      "harvested_parts": [\n'
+            f'        {{\n'
+            f'          "part": "component name",\n'
+            f'          "specs": "voltage, torque, dimensions etc with [KNOWN]/[EST] tags",\n'
+            f'          "project_use": "how this part serves the project goal",\n'
+            f'          "confidence": "high|medium|low"\n'
+            f'        }}\n'
+            f'      ]\n'
+            f'    }}\n'
+            f'  ],\n'
+            f'  "feasibility_score": 0-100,\n'
+            f'  "critical_gaps": ["list of missing essentials"],\n'
+            f'  "honest_limitations": ["what this build cannot do"],\n'
+            f'  "creative_possibilities": [\n'
+            f'    {{"idea": "description", "why_unique": "why this inventory enables it"}}\n'
+            f'  ],\n'
+            f'  "analysis_summary": "2-3 paragraph prose summary"\n'
+            f'}}\n'
+            + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+        )
+        user_msg = (
+            f"WHAT I WANT TO BUILD:\n{project_type}\n\n"
+            f"WHAT I ACTUALLY HAVE:\n{_truncate(junk_desc, 3000)}\n\n"
+            f"Analyze every item. Return ONLY the JSON structure."
+        )
 
     # Token budget check
-    inventory_text = _truncate(junk_desc, 3000)
-    texts = [system, inventory_text, project_type]
+    texts = [system, user_msg]
     texts = _token_budget_check(texts, max_toks.get(detail_level, 2000) * 2, "grok_input")
 
     try:
@@ -433,11 +447,7 @@ async def _run_grok_inner(junk_desc: str, project_type: str,
                     "model": "grok-3",
                     "messages": [
                         {"role": "system", "content": texts[0]},
-                        {"role": "user", "content": (
-                            f"WHAT I WANT TO BUILD:\n{texts[2]}\n\n"
-                            f"WHAT I ACTUALLY HAVE:\n{texts[1]}\n\n"
-                            f"Analyze every item. Return ONLY the JSON structure."
-                        )},
+                        {"role": "user", "content": texts[1]},
                     ],
                     "max_tokens": max_toks.get(detail_level, 2000),
                     "temperature": 0.3,
@@ -475,11 +485,12 @@ async def _run_grok_inner(junk_desc: str, project_type: str,
 
 
 async def _run_grok(junk_desc: str, project_type: str,
-                    detail_level: str, conception_context: str) -> dict:
+                    detail_level: str, conception_context: str,
+                    mode: str = "blueprint") -> dict:
     """Grok with retry wrapper."""
     try:
         return await _retry_async(
-            _run_grok_inner, junk_desc, project_type, detail_level, conception_context,
+            _run_grok_inner, junk_desc, project_type, detail_level, conception_context, mode,
             max_attempts=2, base_delay=5.0, label="Grok"
         )
     except Exception as e:
@@ -523,72 +534,133 @@ def _format_grok_for_claude(grok_analysis) -> str:
     return "\n".join(lines)
 
 
+def _format_grok_for_mechanic(grok_analysis) -> str:
+    """Convert mechanic-mode Grok JSON to readable text for Claude."""
+    if isinstance(grok_analysis, str):
+        return grok_analysis
+
+    if not isinstance(grok_analysis, dict):
+        return "No diagnostic analysis available."
+
+    lines = []
+    lines.append(f"FIELD FIX CONFIDENCE: {grok_analysis.get('field_fix_confidence', '?')}/100")
+    lines.append(f"CAN FIX IN FIELD: {grok_analysis.get('can_fix_in_field', '?')}\n")
+
+    for d in grok_analysis.get("diagnosis", []):
+        lines.append(f"LIKELY CAUSE [{d.get('probability', '?')}]: {d.get('likely_cause', '?')}")
+        lines.append(f"  Verify: {d.get('how_to_verify', '?')}")
+        lines.append(f"  Symptoms: {d.get('symptoms_match', '?')}")
+        lines.append("")
+
+    specs = grok_analysis.get("engine_specs", {})
+    if specs:
+        lines.append("ENGINE SPECS:")
+        for k, v in specs.items():
+            if k != "common_issues":
+                lines.append(f"  {k}: {v}")
+        issues = specs.get("common_issues", [])
+        if issues:
+            lines.append(f"  COMMON ISSUES: {', '.join(issues)}")
+        lines.append("")
+
+    warning = grok_analysis.get("critical_warning", "")
+    if warning:
+        lines.append(f"CRITICAL WARNING: {warning}\n")
+
+    summary = grok_analysis.get("diagnostic_summary", "")
+    if summary:
+        lines.append(f"SUMMARY:\n{summary}")
+
+    return "\n".join(lines)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # AGENT 2: CLAUDE — BLUEPRINT (markdown output, structured input)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _run_claude_sync(junk_desc: str, project_type: str,
                      grok_analysis, detail_level: str,
-                     conception_context: str, grok_ok: bool) -> dict:
+                     conception_context: str, grok_ok: bool,
+                     mode: str = "blueprint") -> dict:
     if not ANTHROPIC_KEY:
         return {"blueprint": "Claude offline.", "tokens": 0}
-
-    detail_map = {
-        "Standard": (
-            "Complete blueprint with 10 sections. "
-            "Include specific measurements and dimensions."
-        ),
-        "Industrial": (
-            "Industrial-grade. 10 standard sections PLUS: "
-            "POWER BUDGET, TORQUE CALCULATIONS, WEIGHT DISTRIBUTION, "
-            "WIRING DIAGRAM, BILL OF MATERIALS, TOLERANCES."
-        ),
-        "Experimental": (
-            "Research-grade. Everything in Industrial PLUS: "
-            "FAILURE MODE ANALYSIS, THERMAL ANALYSIS, FATIGUE LIFE, "
-            "CONTROL SYSTEM with PID, ALTERNATIVE DESIGNS, "
-            "PERFORMANCE ENVELOPE, UPGRADE PATH."
-        ),
-    }
-
-    grok_warning = ""
-    if not grok_ok:
-        grok_warning = (
-            "\n\nWARNING: Grok's inventory analysis failed. You MUST analyze "
-            "the raw inventory yourself. Do NOT rely on the Grok section below.\n"
-        )
-
-    system = (
-        "You are CLAUDE-SONNET, a senior mechanical engineer on AoC3P0 Builder Foundry.\n\n"
-        "CRITICAL: PROJECT GOAL is what user wants to BUILD. INVENTORY is what they OWN.\n\n"
-        "DESIGN ORIGINALITY: Do NOT copy commercial designs. INVENT a novel mechanism "
-        "based on what the inventory provides. Propose 2+ approaches in the overview.\n\n"
-        "MATERIALS: Every part must trace to a specific inventory item.\n"
-        "Exception: basic consumables (fasteners, wires, adhesives).\n\n"
-        "HONESTY: Carry [EST] tags forward. Section 9: HONEST ASSESSMENT & GAPS. "
-        "Section 10: BUDGET GAP-FILLER SHOPPING LIST (Harbor Freight, salvage first).\n\n"
-        "10 SECTIONS: 1-Overview, 2-Materials Manifest, 3-Tools, 4-Assembly Sequence, "
-        "5-Technical Specs, 6-Safety, 7-Testing, 8-Modifications, "
-        "9-Honest Assessment, 10-Budget Gap-Filler.\n\n"
-        + detail_map.get(detail_level, detail_map["Standard"])
-        + grok_warning
-        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
-    )
 
     token_limit = {"Standard": 4000, "Industrial": 6000, "Experimental": 8000}
     max_out = token_limit.get(detail_level, 4000)
 
-    # Format Grok's analysis for Claude
-    grok_text = _format_grok_for_claude(grok_analysis)
-    inventory_text = _truncate(junk_desc, 3000)
-    grok_text = _truncate(grok_text, 4000)
+    if mode == "mechanic":
+        system = _mechanic_claude_system(detail_level, conception_context, grok_ok)
+        grok_text = _format_grok_for_mechanic(grok_analysis)
+        grok_text = _truncate(grok_text, 4000)
+        tools_text = _truncate(junk_desc, 3000)
+
+        user_content = (
+            f"GROK-3 DIAGNOSTIC ANALYSIS:\n{grok_text}\n\n"
+            f"ENGINE/EQUIPMENT & SYMPTOM:\n{project_type}\n\n"
+            f"AVAILABLE TOOLS & PARTS:\n{tools_text}\n\n"
+            f"Write the complete field repair procedure. Use ONLY available tools. "
+            f"Include the emergency jury-rig option."
+        )
+    else:
+        detail_map = {
+            "Standard": (
+                "Complete blueprint with 10 sections. "
+                "Include specific measurements and dimensions."
+            ),
+            "Industrial": (
+                "Industrial-grade. 10 standard sections PLUS: "
+                "POWER BUDGET, TORQUE CALCULATIONS, WEIGHT DISTRIBUTION, "
+                "WIRING DIAGRAM, BILL OF MATERIALS, TOLERANCES."
+            ),
+            "Experimental": (
+                "Research-grade. Everything in Industrial PLUS: "
+                "FAILURE MODE ANALYSIS, THERMAL ANALYSIS, FATIGUE LIFE, "
+                "CONTROL SYSTEM with PID, ALTERNATIVE DESIGNS, "
+                "PERFORMANCE ENVELOPE, UPGRADE PATH."
+            ),
+        }
+
+        grok_warning = ""
+        if not grok_ok:
+            grok_warning = (
+                "\n\nWARNING: Grok's inventory analysis failed. You MUST analyze "
+                "the raw inventory yourself. Do NOT rely on the Grok section below.\n"
+            )
+
+        system = (
+            "You are CLAUDE-SONNET, a senior mechanical engineer on AoC3P0 Builder Foundry.\n\n"
+            "CRITICAL: PROJECT GOAL is what user wants to BUILD. INVENTORY is what they OWN.\n\n"
+            "DESIGN ORIGINALITY: Do NOT copy commercial designs. INVENT a novel mechanism "
+            "based on what the inventory provides. Propose 2+ approaches in the overview.\n\n"
+            "MATERIALS: Every part must trace to a specific inventory item.\n"
+            "Exception: basic consumables (fasteners, wires, adhesives).\n\n"
+            "HONESTY: Carry [EST] tags forward. Section 9: HONEST ASSESSMENT & GAPS. "
+            "Section 10: BUDGET GAP-FILLER SHOPPING LIST (Harbor Freight, salvage first).\n\n"
+            "10 SECTIONS: 1-Overview, 2-Materials Manifest, 3-Tools, 4-Assembly Sequence, "
+            "5-Technical Specs, 6-Safety, 7-Testing, 8-Modifications, "
+            "9-Honest Assessment, 10-Budget Gap-Filler.\n\n"
+            + detail_map.get(detail_level, detail_map["Standard"])
+            + grok_warning
+            + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+        )
+
+        grok_text = _format_grok_for_claude(grok_analysis)
+        grok_text = _truncate(grok_text, 4000)
+        inventory_text = _truncate(junk_desc, 3000)
+
+        user_content = (
+            f"GROK-3 INVENTORY ANALYSIS:\n{grok_text}\n\n"
+            f"PROJECT GOAL:\n{project_type}\n\n"
+            f"RAW INVENTORY:\n{inventory_text}\n\n"
+            f"Generate the complete blueprint. Every material must reference "
+            f"which inventory item it came from."
+        )
 
     # Token budget check on input
-    input_estimate = _estimate_tokens(system + grok_text + inventory_text + project_type)
+    input_estimate = _estimate_tokens(system + user_content)
     if input_estimate > 12000:
         _log_event("claude_input_truncated", estimated_tokens=input_estimate)
-        grok_text = _truncate(grok_text, 2500)
-        inventory_text = _truncate(inventory_text, 2000)
+        user_content = _truncate(user_content, 8000)
 
     try:
         client = _get_anthropic()
@@ -597,16 +669,7 @@ def _run_claude_sync(junk_desc: str, project_type: str,
             max_tokens=max_out,
             temperature=0.1,
             system=system,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"GROK-3 INVENTORY ANALYSIS:\n{grok_text}\n\n"
-                    f"PROJECT GOAL:\n{project_type}\n\n"
-                    f"RAW INVENTORY:\n{inventory_text}\n\n"
-                    f"Generate the complete blueprint. Every material must reference "
-                    f"which inventory item it came from."
-                ),
-            }],
+            messages=[{"role": "user", "content": user_content}],
         )
         return {
             "blueprint": resp.content[0].text,
@@ -619,10 +682,11 @@ def _run_claude_sync(junk_desc: str, project_type: str,
 
 async def _run_claude(junk_desc: str, project_type: str,
                       grok_analysis, detail_level: str,
-                      conception_context: str, grok_ok: bool = True) -> dict:
+                      conception_context: str, grok_ok: bool = True,
+                      mode: str = "blueprint") -> dict:
     return await asyncio.to_thread(
         _run_claude_sync, junk_desc, project_type,
-        grok_analysis, detail_level, conception_context, grok_ok
+        grok_analysis, detail_level, conception_context, grok_ok, mode
     )
 
 
@@ -764,14 +828,111 @@ async def _generate_schematic(blueprint: str, project_type: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# MECHANIC MODE — FIELD REPAIR PROMPTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mechanic_grok_system(detail_level: str, conception_context: str) -> str:
+    """Grok system prompt for mechanic/field repair mode."""
+    return (
+        "You are GROK-3, a master diesel and marine mechanic on AoC3P0 Builder Foundry.\n\n"
+        "The user is a FIELD MECHANIC — they may be on a boat in the ocean, at a remote "
+        "job site, or stranded with limited tools. They need PRACTICAL answers they can "
+        "act on RIGHT NOW with what they have.\n\n"
+        "INPUTS:\n"
+        "- ENGINE/EQUIPMENT: The specific make, model, and type they're working on\n"
+        "- SYMPTOM/FAULT: What's wrong — symptoms, fault codes, or observed behavior\n"
+        "- AVAILABLE TOOLS/PARTS: What they physically have with them RIGHT NOW\n\n"
+        "YOUR JOB — DIAGNOSTIC ANALYSIS:\n"
+        "Return ONLY valid JSON with this structure:\n"
+        '{\n'
+        '  "diagnosis": [\n'
+        '    {\n'
+        '      "likely_cause": "description",\n'
+        '      "probability": "high|medium|low",\n'
+        '      "how_to_verify": "specific test the mechanic can do with available tools",\n'
+        '      "symptoms_match": "which reported symptoms point to this cause"\n'
+        '    }\n'
+        '  ],\n'
+        '  "engine_specs": {\n'
+        '    "displacement": "...", "power": "...", "torque": "...",\n'
+        '    "oil_capacity": "...", "oil_type": "...",\n'
+        '    "coolant_capacity": "...", "fuel_system": "...",\n'
+        '    "common_issues": ["known problems with this engine"]\n'
+        '  },\n'
+        '  "critical_warning": "anything that could make it WORSE if they do the wrong thing",\n'
+        '  "can_fix_in_field": true/false,\n'
+        '  "field_fix_confidence": 0-100,\n'
+        '  "diagnostic_summary": "2-paragraph summary"\n'
+        '}\n\n'
+        "HONESTY: If you're not sure about a spec, mark it [EST]. If the engine is "
+        "unfamiliar, say so. A wrong spec on a marine diesel can sink a boat.\n"
+        "Be SPECIFIC to the exact engine model, not generic.\n"
+        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+    )
+
+
+def _mechanic_claude_system(detail_level: str, conception_context: str,
+                             grok_ok: bool) -> str:
+    """Claude system prompt for mechanic/field repair mode."""
+    grok_warning = ""
+    if not grok_ok:
+        grok_warning = (
+            "\n\nWARNING: The diagnostic agent failed. You MUST diagnose from the "
+            "raw symptom description yourself.\n"
+        )
+
+    detail_extra = {
+        "Standard": "Complete repair procedure with 8 sections.",
+        "Industrial": (
+            "Industrial-depth procedure. Include: TORQUE SPECS TABLE, "
+            "FLUID SPECIFICATIONS, CLEARANCE MEASUREMENTS, WIRING DIAGRAM DESCRIPTION."
+        ),
+        "Experimental": (
+            "Maximum depth. Everything in Industrial PLUS: "
+            "ROOT CAUSE ANALYSIS, RELATED SYSTEM CHECKS, "
+            "PREVENTIVE MAINTENANCE SCHEDULE, REBUILD SPECS IF APPLICABLE, "
+            "ELECTRICAL SYSTEM DIAGNOSTICS."
+        ),
+    }
+
+    return (
+        "You are CLAUDE-SONNET, a senior marine and diesel mechanic engineer "
+        "on AoC3P0 Builder Foundry.\n\n"
+        "The user is a FIELD MECHANIC working in tough conditions — possibly "
+        "on a boat at sea, at a remote site, or under time pressure. They need "
+        "CLEAR, STEP-BY-STEP instructions they can follow with LIMITED TOOLS.\n\n"
+        "WRITE THE REPAIR PROCEDURE WITH THESE SECTIONS:\n"
+        "1. QUICK DIAGNOSIS SUMMARY — What's most likely wrong, in plain language\n"
+        "2. SAFETY FIRST — What to shut down/disconnect before starting\n"
+        "3. DIAGNOSTIC STEPS — Systematic checks to confirm the root cause\n"
+        "4. FIELD REPAIR PROCEDURE — Step-by-step using ONLY available tools/parts\n"
+        "5. TORQUE SPECS & MEASUREMENTS — Every bolt, every spec, every tolerance\n"
+        "6. EMERGENCY JURY-RIG — If proper repair isn't possible, what's the safe "
+        "temporary fix to get them home/to port? What are the RISKS of the temp fix?\n"
+        "7. DO NOT DO THIS — Common mistakes that make this problem WORSE\n"
+        "8. PARTS NEEDED AT PORT — What to order/buy when they reach civilization\n\n"
+        "CRITICAL RULES:\n"
+        "- Be SPECIFIC to the engine model. A Cummins 6BTA is not a CAT 3126.\n"
+        "- Torque specs MUST be for the actual engine, marked [KNOWN] or [EST]\n"
+        "- If a field fix could cause MORE damage, say so clearly\n"
+        "- Always include the 'get home safe' option even if it's imperfect\n"
+        "- Use PLAIN MECHANIC LANGUAGE — no academic engineering jargon\n\n"
+        + detail_extra.get(detail_level, detail_extra["Standard"])
+        + grok_warning
+        + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FORGE PIPELINE
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _forge_pipeline(user_email: str, junk_desc: str,
                            project_type: str, detail_level: str,
-                           task=None) -> dict:
+                           mode: str = "blueprint", task=None) -> dict:
     timings = {}
     _heartbeat_active = True
+    is_mechanic = (mode == "mechanic")
 
     def _update(msg: str):
         if task:
@@ -798,32 +959,48 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
         timings["recall"] = t.elapsed
 
         # 1 — Grok
-        _update("GROK-3 disassembling inventory... identifying harvestable components")
+        if is_mechanic:
+            _update("GROK-3 diagnosing engine... analyzing fault patterns")
+        else:
+            _update("GROK-3 disassembling inventory... identifying harvestable components")
         with _Timer("Grok") as t:
-            grok_r = await _run_grok(junk_desc, project_type, detail_level, ctx)
+            grok_r = await _run_grok(junk_desc, project_type, detail_level, ctx, mode=mode)
         timings["grok"] = t.elapsed
         grok_analysis = grok_r["analysis"]
         grok_ok = not _grok_failed(grok_analysis)
 
         if not grok_ok:
-            _update("GROK-3 incomplete — CLAUDE analyzing inventory directly")
+            if is_mechanic:
+                _update("GROK-3 incomplete — CLAUDE diagnosing from symptoms directly")
+            else:
+                _update("GROK-3 incomplete — CLAUDE analyzing inventory directly")
 
-        # 2 — Claude blueprint
-        _update("CLAUDE drafting engineering blueprint...")
+        # 2 — Claude
+        if is_mechanic:
+            _update("CLAUDE writing field repair procedure...")
+        else:
+            _update("CLAUDE drafting engineering blueprint...")
         with _Timer("Claude Blueprint") as t:
             claude_r = await _run_claude(junk_desc, project_type, grok_analysis,
-                                         detail_level, ctx, grok_ok)
+                                         detail_level, ctx, grok_ok, mode=mode)
         timings["claude"] = t.elapsed
         blueprint = claude_r["blueprint"]
 
-        # 3 + 4 — Gemini + Schematic PARALLEL
-        _update("GEMINI reviewing + rendering schematic...")
-        with _Timer("Gemini + Schematic") as t:
-            gemini_r, schematic_svg = await asyncio.gather(
-                _run_gemini(blueprint, project_type, ctx),
-                _generate_schematic(blueprint, project_type, junk_desc),
-            )
-        timings["parallel"] = t.elapsed
+        # 3 + 4 — Gemini + Schematic PARALLEL (skip schematic in mechanic mode)
+        if is_mechanic:
+            _update("GEMINI verifying repair procedure...")
+            with _Timer("Gemini Review") as t:
+                gemini_r = await _run_gemini(blueprint, project_type, ctx)
+            timings["parallel"] = t.elapsed
+            schematic_svg = ""
+        else:
+            _update("GEMINI reviewing + rendering schematic...")
+            with _Timer("Gemini + Schematic") as t:
+                gemini_r, schematic_svg = await asyncio.gather(
+                    _run_gemini(blueprint, project_type, ctx),
+                    _generate_schematic(blueprint, project_type, junk_desc),
+                )
+            timings["parallel"] = t.elapsed
 
     finally:
         _heartbeat_active = False
@@ -941,13 +1118,15 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
     time_limit=330,
 )
 def forge_blueprint_task(self, user_email: str, junk_desc: str,
-                          project_type: str, detail_level: str = "Standard"):
+                          project_type: str, detail_level: str = "Standard",
+                          mode: str = "blueprint"):
     _log_event("forge_started", user=user_email,
-               project=project_type[:50], depth=detail_level)
+               project=project_type[:50], depth=detail_level, mode=mode)
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(
-            _forge_pipeline(user_email, junk_desc, project_type, detail_level, task=self)
+            _forge_pipeline(user_email, junk_desc, project_type, detail_level,
+                           mode=mode, task=self)
         )
     except Exception as e:
         _log_event("forge_failed", user=user_email, error=str(e)[:200],
