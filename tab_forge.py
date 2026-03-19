@@ -104,7 +104,7 @@ def render():
         task_key="active_task", attempts_key="forge_attempts",
         status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="ROUND TABLE ACTIVE", color="#FF4500",
-        complete_title="SYNTHESIS COMPLETE", show_schematic=True,
+        complete_title="SYNTHESIS COMPLETE", show_schematic_flag=True,
         timeout_msg="Forge timed out. The server may be under heavy load. Try again.",
         fail_msg="The Round Table failed to reach consensus. Check your manifest.",
         archive_msg="Blueprint archived in Conception DNA Vault."
