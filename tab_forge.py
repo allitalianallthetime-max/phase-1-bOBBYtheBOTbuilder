@@ -70,16 +70,16 @@ def render():
                 st.error("Describe your inventory in more detail.")
             else:
                 with st.spinner("Waking AI agents..."):
-                    # Wake AI service if sleeping (Render cold-start)
-                    awake = ping_service(f"{AI_URL}/health", timeout=10.0)
-                    if not awake:
-                        # Give it a second try — Render needs ~5-10s to wake
-                        import time as _t
-                        _t.sleep(3)
+                    awake = False
+                    for attempt in range(3):
                         awake = ping_service(f"{AI_URL}/health", timeout=15.0)
+                        if awake:
+                            break
+                        import time as _t
+                        _t.sleep(5)
 
                 if not awake:
-                    st.warning("AI service is starting up. Click FORGE again in 10 seconds.")
+                    st.warning("AI service is waking up — Render cold starts can take 30 seconds. Click FORGE again.")
                 else:
                     with st.spinner("Initiating Round Table protocols..."):
                         result = api_post(f"{AI_URL}/generate", {
@@ -87,6 +87,7 @@ def render():
                             "project_type": project_name.strip(),
                             "detail_level": detail_level,
                             "user_email":   st.session_state.user_email,
+                            "mode":         "blueprint",
                         }, timeout=60.0)
 
                         if isinstance(result, APIError):
