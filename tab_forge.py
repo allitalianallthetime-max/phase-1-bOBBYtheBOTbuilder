@@ -100,7 +100,7 @@ def render():
                             st.success("Agents deployed. Blueprint forging...")
 
     # ── TASK POLLING ──
-    _poll_task(
+    poll_task(
         task_key="active_task", attempts_key="forge_attempts",
         status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="ROUND TABLE ACTIVE", color="#FF4500",
