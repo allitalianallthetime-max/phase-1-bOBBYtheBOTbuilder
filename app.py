@@ -124,6 +124,82 @@ def _show_schematic(schematic: str, build_id: str):
     st.markdown("---")
 
 
+def _poll_task(task_key: str, attempts_key: str, max_attempts: int = 40,
+               label: str = "PROCESSING", color: str = "#FF4500",
+               complete_title: str = "COMPLETE", dl_suffix: str = "",
+               show_schematic: bool = False,
+               timeout_msg: str = "Task timed out. Try again.",
+               fail_msg: str = "Task failed. Try again.",
+               archive_msg: str = "Archived in Conception DNA Vault."):
+    """Shared polling loop for all async AI tasks (forge/mechanic/quote/scan)."""
+    task_id = st.session_state.get(task_key)
+    if not task_id:
+        return
+
+    attempts = st.session_state.get(attempts_key, 0)
+
+    if attempts >= max_attempts:
+        st.error(timeout_msg)
+        st.session_state[task_key] = None
+        st.session_state[attempts_key] = 0
+        return
+
+    st.markdown("---")
+    result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
+
+    if isinstance(result, APIError):
+        st.warning(f"Polling interrupted: {result.detail}")
+        st.session_state[attempts_key] = attempts + 1
+        time.sleep(5)
+        st.rerun()
+        return
+
+    state = result.get("status")
+
+    if state == "complete":
+        st.balloons()
+        st.markdown(f"#### {complete_title}")
+        res = result.get("result", {})
+        content = res.get("content", "")
+        build_id = res.get("build_id", "")
+        schematic = res.get("schematic_svg", "")
+
+        if show_schematic and schematic:
+            _show_schematic(schematic, build_id)
+        st.markdown(content)
+        if build_id:
+            _download_buttons(build_id, key_suffix=dl_suffix)
+        st.info(archive_msg)
+        st.session_state[task_key] = None
+        st.session_state[attempts_key] = 0
+
+    elif state == "failed":
+        error_msg = result.get("error", "")
+        if "TimeLimitExceeded" in error_msg:
+            st.error("Timed out. Try Standard depth or simplify the input.")
+        else:
+            st.error(fail_msg)
+        st.session_state[task_key] = None
+        st.session_state[attempts_key] = 0
+
+    else:
+        msg = result.get("message", "Processing...")
+        elapsed = attempts * 3
+        st.markdown(f"""
+            <div style='background:#1E293B; padding:16px; border-radius:8px;
+                        border-left:4px solid {color}; margin:8px 0;'>
+              <div style='color:{color}; font-size:13px; font-weight:bold;
+                          font-family:monospace; letter-spacing:1px;'>
+                {html.escape(label)} ({elapsed}s)</div>
+              <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
+                {html.escape(msg)}</div>
+            </div>
+        """, unsafe_allow_html=True)
+        st.session_state[attempts_key] = attempts + 1
+        time.sleep(3)
+        st.rerun()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # LANDING PAGE (not logged in)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -895,70 +971,14 @@ if st.session_state.active_tab == "forge":
                             st.success("Agents deployed. Blueprint forging...")
 
     # ── TASK POLLING ──
-    if st.session_state.active_task:
-        max_forge_attempts = 40  # 40 x 3s = 2 minutes max
-
-        if st.session_state.forge_attempts >= max_forge_attempts:
-            st.error("Forge timed out. The server may be under heavy load. Try again.")
-            st.session_state.active_task = None
-            st.session_state.forge_attempts = 0
-        else:
-            st.markdown("---")
-            st.markdown("### CURRENT BUILD LOG")
-            task_id = st.session_state.active_task
-
-            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
-
-            if isinstance(result, APIError):
-                st.warning(f"Polling interrupted: {result.detail}")
-                st.session_state.forge_attempts += 1
-                time.sleep(5)
-                st.rerun()
-            else:
-                state = result.get("status")
-
-                if state == "complete":
-                    st.balloons()
-                    st.markdown("#### SYNTHESIS COMPLETE")
-
-                    res       = result.get("result", {})
-                    blueprint = res.get("content", "")
-                    build_id  = res.get("build_id", "")
-                    schematic = res.get("schematic_svg", "")
-
-                    _show_schematic(schematic, build_id)
-                    st.markdown(blueprint)
-                    if build_id:
-                        _download_buttons(build_id)
-                    st.info("Blueprint archived in Conception DNA Vault.")
-                    st.session_state.active_task = None
-                    st.session_state.forge_attempts = 0
-
-                elif state == "failed":
-                    error_msg = result.get("error", "")
-                    if "TimeLimitExceeded" in error_msg:
-                        st.error("Blueprint timed out. Try Standard depth or a simpler project.")
-                    else:
-                        st.error("The Round Table failed to reach consensus. Check your manifest.")
-                    st.session_state.active_task = None
-                    st.session_state.forge_attempts = 0
-
-                else:
-                    msg = result.get("message", "Initializing Round Table protocols...")
-                    elapsed = st.session_state.forge_attempts * 3
-                    st.markdown(f"""
-                        <div style='background:#1E293B; padding:16px; border-radius:8px;
-                                    border-left:4px solid #FF4500; margin:8px 0;'>
-                          <div style='color:#FF4500; font-size:13px; font-weight:bold;
-                                      font-family:monospace; letter-spacing:1px;'>
-                            ROUND TABLE ACTIVE ({elapsed}s)</div>
-                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
-                            {html.escape(msg)}</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.session_state.forge_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
+    _poll_task(
+        task_key="active_task", attempts_key="forge_attempts",
+        max_attempts=40, label="ROUND TABLE ACTIVE", color="#FF4500",
+        complete_title="SYNTHESIS COMPLETE", show_schematic=True,
+        timeout_msg="Forge timed out. The server may be under heavy load. Try again.",
+        fail_msg="The Round Table failed to reach consensus. Check your manifest.",
+        archive_msg="Blueprint archived in Conception DNA Vault."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1374,64 +1394,14 @@ elif st.session_state.active_tab == "mechanic":
                             st.success("Diagnostic agents deployed...")
 
     # ── MECHANIC TASK POLLING ──
-    if st.session_state.mechanic_task:
-        max_mech_attempts = 40
-
-        if st.session_state.mechanic_attempts >= max_mech_attempts:
-            st.error("Diagnosis timed out. Try again or simplify the symptoms.")
-            st.session_state.mechanic_task = None
-            st.session_state.mechanic_attempts = 0
-        else:
-            st.markdown("---")
-            st.markdown("### DIAGNOSTIC LOG")
-            task_id = st.session_state.mechanic_task
-
-            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
-
-            if isinstance(result, APIError):
-                st.warning(f"Polling interrupted: {result.detail}")
-                st.session_state.mechanic_attempts += 1
-                time.sleep(5)
-                st.rerun()
-            else:
-                state = result.get("status")
-
-                if state == "complete":
-                    st.balloons()
-                    st.markdown("#### REPAIR PROCEDURE READY")
-
-                    res       = result.get("result", {})
-                    procedure = res.get("content", "")
-                    build_id  = res.get("build_id", "")
-
-                    st.markdown(procedure)
-                    if build_id:
-                        _download_buttons(build_id, key_suffix="_mech")
-                    st.info("Repair procedure archived in Conception DNA Vault.")
-                    st.session_state.mechanic_task = None
-                    st.session_state.mechanic_attempts = 0
-
-                elif state == "failed":
-                    st.error("Diagnostic agents could not reach consensus. Try simplifying the symptoms.")
-                    st.session_state.mechanic_task = None
-                    st.session_state.mechanic_attempts = 0
-
-                else:
-                    msg = result.get("message", "Analyzing engine data...")
-                    elapsed = st.session_state.mechanic_attempts * 3
-                    st.markdown(f"""
-                        <div style='background:#1E293B; padding:16px; border-radius:8px;
-                                    border-left:4px solid #F59E0B; margin:8px 0;'>
-                          <div style='color:#F59E0B; font-size:13px; font-weight:bold;
-                                      font-family:monospace; letter-spacing:1px;'>
-                            DIAGNOSTIC ACTIVE ({elapsed}s)</div>
-                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
-                            {html.escape(msg)}</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.session_state.mechanic_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
+    _poll_task(
+        task_key="mechanic_task", attempts_key="mechanic_attempts",
+        max_attempts=40, label="DIAGNOSTIC ACTIVE", color="#F59E0B",
+        complete_title="REPAIR PROCEDURE READY", dl_suffix="_mech",
+        timeout_msg="Diagnosis timed out. Try again or simplify the symptoms.",
+        fail_msg="Diagnostic agents could not reach consensus. Try simplifying the symptoms.",
+        archive_msg="Repair procedure archived in Conception DNA Vault."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1545,50 +1515,14 @@ elif st.session_state.active_tab == "quote_check":
                             st.success("Analyzing your quote...")
 
     # ── QUOTE CHECK POLLING ──
-    if st.session_state.quote_task:
-        max_qc_attempts = 40
-        if st.session_state.quote_attempts >= max_qc_attempts:
-            st.error("Analysis timed out. Try again.")
-            st.session_state.quote_task = None
-            st.session_state.quote_attempts = 0
-        else:
-            st.markdown("---")
-            task_id = st.session_state.quote_task
-            result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
-
-            if isinstance(result, APIError):
-                st.session_state.quote_attempts += 1
-                time.sleep(5)
-                st.rerun()
-            else:
-                state = result.get("status")
-                if state == "complete":
-                    st.balloons()
-                    res = result.get("result", {})
-                    st.markdown(res.get("content", ""))
-                    if res.get("build_id"):
-                        _download_buttons(res["build_id"], key_suffix="_qc")
-                    st.session_state.quote_task = None
-                    st.session_state.quote_attempts = 0
-                elif state == "failed":
-                    st.error("Quote analysis failed. Try again.")
-                    st.session_state.quote_task = None
-                    st.session_state.quote_attempts = 0
-                else:
-                    msg = result.get("message", "Analyzing quote...")
-                    elapsed = st.session_state.quote_attempts * 3
-                    st.markdown(f"""
-                        <div style='background:#1E293B; padding:16px; border-radius:8px;
-                                    border-left:4px solid #10B981; margin:8px 0;'>
-                          <div style='color:#10B981; font-size:13px; font-weight:bold;'>
-                            QUOTE ANALYSIS ({elapsed}s)</div>
-                          <div style='color:#E2E8F0; font-size:15px; margin-top:8px;'>
-                            {html.escape(msg)}</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.session_state.quote_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
+    _poll_task(
+        task_key="quote_task", attempts_key="quote_attempts",
+        max_attempts=40, label="QUOTE ANALYSIS", color="#10B981",
+        complete_title="QUOTE ANALYSIS COMPLETE", dl_suffix="_qc",
+        timeout_msg="Analysis timed out. Try again.",
+        fail_msg="Quote analysis failed. Try again.",
+        archive_msg="Quote analysis archived."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1780,17 +1714,22 @@ st.caption("AoC3P0 Systems | The Builder Foundry | Conception DNA Architecture")
 # If any unhandled exception occurred during rendering, Streamlit shows its own
 # error widget. This is a safety net for the developer — in production, each
 # section already handles errors via isinstance(result, APIError) checks.
-# To see raw exceptions during development, set: SHOW_DEBUG=1 in env vars.
-if os.getenv("SHOW_DEBUG"):
+# To see debug info during development, set: SHOW_DEBUG=1 in Render env vars.
+# NEVER set this in production — it exposes service URLs and session state.
+if os.getenv("SHOW_DEBUG") == "1" and st.session_state.get("logged_in"):
     st.markdown("---")
-    with st.expander("🔧 DEBUG INFO"):
+    with st.expander("🔧 DEBUG INFO (dev only)"):
+        safe_state = {}
+        for k, v in st.session_state.items():
+            if k in ("jwt_token", "user_email"):
+                safe_state[k] = "***"
+            else:
+                safe_state[k] = str(v)[:100]
         st.json({
-            "session_state": {k: str(v)[:100] for k, v in st.session_state.items()},
+            "session_state": safe_state,
             "services": {
-                "auth": AUTH_URL,
-                "ai": AI_URL,
-                "workshop": WORKSHOP_URL,
-                "export": EXPORT_URL,
-                "billing": BILLING_URL,
+                "auth": AUTH_URL.split("//")[-1][:30],
+                "ai": AI_URL.split("//")[-1][:30],
+                "billing": BILLING_URL.split("//")[-1][:30],
             },
         })
