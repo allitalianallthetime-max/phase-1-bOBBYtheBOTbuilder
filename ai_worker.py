@@ -378,6 +378,12 @@ async def _run_grok_inner(junk_desc: str, project_type: str,
             f"AVAILABLE TOOLS & PARTS:\n{_truncate(junk_desc, 3000)}\n\n"
             f"Diagnose the issue. Return ONLY the JSON structure."
         )
+    elif mode == "quote_check":
+        system = _quote_check_grok_system(conception_context)
+        user_msg = (
+            f"{project_type}\n\n"
+            f"Analyze what this repair should cost. Return ONLY the JSON structure."
+        )
     else:
         detail_instructions = {
             "Standard": "Identify major harvestable components from each item.",
@@ -585,7 +591,7 @@ def _format_grok_for_mechanic(grok_analysis) -> str:
 def _run_claude_sync(junk_desc: str, project_type: str,
                      grok_analysis, detail_level: str,
                      conception_context: str, grok_ok: bool,
-                     mode: str = "blueprint") -> dict:
+                     mode: str = "blueprint", research_text: str = "") -> dict:
     if not ANTHROPIC_KEY:
         return {"blueprint": "Claude offline.", "tokens": 0}
 
@@ -600,11 +606,28 @@ def _run_claude_sync(junk_desc: str, project_type: str,
 
         user_content = (
             f"GROK-3 DIAGNOSTIC ANALYSIS:\n{grok_text}\n\n"
-            f"REPAIR REQUEST:\n{project_type}\n\n"
+            + (f"{research_text}\n\n" if research_text else "")
+            + f"REPAIR REQUEST:\n{project_type}\n\n"
             f"AVAILABLE TOOLS & PARTS:\n{tools_text}\n\n"
             f"Write the complete field repair procedure. Use ONLY available tools. "
             f"Include the emergency jury-rig option. DO NOT suggest anything "
-            f"listed under ALREADY TRIED."
+            f"listed under ALREADY TRIED. "
+            f"Reference real forum fixes, TSB numbers, and part prices from the "
+            f"web research when available. Include a REFERENCES section with links."
+        )
+    elif mode == "quote_check":
+        system = _quote_check_claude_system(conception_context)
+        grok_text = (json.dumps(grok_analysis, indent=2) if isinstance(grok_analysis, dict)
+                     else str(grok_analysis))
+        grok_text = _truncate(grok_text, 4000)
+
+        user_content = (
+            f"GROK-3 COST ANALYSIS:\n{grok_text}\n\n"
+            + (f"{research_text}\n\n" if research_text else "")
+            + f"QUOTE TO CHECK:\n{project_type}\n\n"
+            f"Write the complete quote analysis. Be honest — if the quote is fair, "
+            f"say so. Include real part prices from web research. Check for recalls "
+            f"and extended warranties. Give the vehicle owner a clear action plan."
         )
     else:
         detail_map = {
@@ -655,10 +678,13 @@ def _run_claude_sync(junk_desc: str, project_type: str,
 
         user_content = (
             f"GROK-3 INVENTORY ANALYSIS:\n{grok_text}\n\n"
-            f"PROJECT GOAL:\n{project_type}\n\n"
+            + (f"{research_text}\n\n" if research_text else "")
+            + f"PROJECT GOAL:\n{project_type}\n\n"
             f"RAW INVENTORY:\n{inventory_text}\n\n"
             f"Generate the complete blueprint. Every material must reference "
-            f"which inventory item it came from."
+            f"which inventory item it came from. Reference real maker projects, "
+            f"part prices, and build videos from the web research when available. "
+            f"Include a REFERENCES section with links."
         )
 
     # Token budget check on input
@@ -688,11 +714,172 @@ def _run_claude_sync(junk_desc: str, project_type: str,
 async def _run_claude(junk_desc: str, project_type: str,
                       grok_analysis, detail_level: str,
                       conception_context: str, grok_ok: bool = True,
-                      mode: str = "blueprint") -> dict:
+                      mode: str = "blueprint", research_text: str = "") -> dict:
     return await asyncio.to_thread(
         _run_claude_sync, junk_desc, project_type,
-        grok_analysis, detail_level, conception_context, grok_ok, mode
+        grok_analysis, detail_level, conception_context, grok_ok, mode,
+        research_text
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GEMINI — WEB RESEARCH AGENT (runs parallel with Grok)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _run_gemini_research(project_type: str, mode: str = "blueprint") -> dict:
+    """Gemini searches the web for real-world data relevant to the build/repair."""
+    _empty = {"research": {}, "tokens": 0}
+    if not GEMINI_KEY or not _GENAI_AVAILABLE:
+        return _empty
+
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    if mode == "mechanic" or mode == "quote_check":
+        prompt = (
+            f"Search the web for real-world repair information about this problem.\n\n"
+            f"{project_type}\n\n"
+            f"Search for:\n"
+            f"1. Forum threads from mechanics who fixed this exact problem (iBoats, "
+            f"CumminsForum, TheDieselStop, FixYa, JustAnswer, etc.)\n"
+            f"2. Technical Service Bulletins (TSBs) related to this symptom\n"
+            f"3. NHTSA complaints and recalls for this vehicle/engine\n"
+            f"4. Extended warranty or special service campaigns\n"
+            f"5. Replacement parts with real pricing and part numbers "
+            f"(RockAuto, Amazon, dealer sites, MarinePartsSource)\n"
+            f"6. YouTube repair walkthrough videos for this specific repair\n"
+            f"7. Wiring diagrams or schematics relevant to this repair\n\n"
+            f"Return JSON only — no markdown, no preamble:\n"
+            f'{{\n'
+            f'  "forum_fixes": [{{"source":"...","url":"...","summary":"what fixed it","verified":true}}],\n'
+            f'  "tsbs": [{{"number":"...","title":"...","summary":"...","source_url":"..."}}],\n'
+            f'  "nhtsa_complaints": {{"count":0,"top_complaint":"...","investigation_id":"..."}},\n'
+            f'  "recalls": [{{"number":"...","description":"...","remedy":"..."}}],\n'
+            f'  "extended_warranties": [{{"campaign":"...","description":"...","coverage":"..."}}],\n'
+            f'  "parts_pricing": [{{"part":"...","part_numbers":["..."],"prices":[{{"source":"...","price":"...","url":"..."}}]}}],\n'
+            f'  "youtube_videos": [{{"title":"...","url":"...","duration":"..."}}],\n'
+            f'  "schematics": [{{"description":"...","source_url":"..."}}],\n'
+            f'  "research_summary": "2-paragraph summary"\n'
+            f'}}\n'
+        )
+    else:
+        # Forge / blueprint mode
+        prompt = (
+            f"Search the web for real-world maker projects and parts related to this build.\n\n"
+            f"PROJECT: {project_type}\n\n"
+            f"Search for:\n"
+            f"1. Similar maker projects on Instructables, Hackaday, or maker blogs\n"
+            f"2. YouTube build videos for similar projects\n"
+            f"3. Gap-filler parts pricing from Harbor Freight, Amazon, eBay\n"
+            f"4. 3D printable parts on Thingiverse that could help\n"
+            f"5. Safety considerations specific to this type of build\n\n"
+            f"Return JSON only — no markdown, no preamble:\n"
+            f'{{\n'
+            f'  "similar_projects": [{{"title":"...","source":"Instructables","url":"...","key_insight":"..."}}],\n'
+            f'  "youtube_builds": [{{"title":"...","url":"...","duration":"...","relevance":"..."}}],\n'
+            f'  "gap_parts_pricing": [{{"part":"...","source":"Harbor Freight","price":"...","url":"..."}}],\n'
+            f'  "printable_parts": [{{"part":"...","source":"Thingiverse","url":"..."}}],\n'
+            f'  "safety_notes": ["..."],\n'
+            f'  "research_summary": "2-paragraph summary"\n'
+            f'}}\n'
+        )
+
+    try:
+        # Use Google Search grounding
+        from google.generativeai.types import content_types
+        resp = await model.generate_content_async(
+            prompt,
+            tools="google_search_retrieval",
+        )
+        text = resp.text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3].strip()
+        research = json.loads(text)
+        _log_event("gemini_research_complete", mode=mode, keys=list(research.keys()))
+        return {"research": research, "tokens": 0}
+    except json.JSONDecodeError:
+        _log_event("gemini_research_json_error", mode=mode)
+        return _empty
+    except Exception as e:
+        _log_event("gemini_research_failed", error=str(e)[:200])
+        # Fallback — try without grounding tool
+        try:
+            resp = await model.generate_content_async(prompt)
+            text = resp.text.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3].strip()
+            research = json.loads(text)
+            return {"research": research, "tokens": 0}
+        except Exception as e2:
+            _log_event("gemini_research_fallback_failed", error=str(e2)[:200])
+            return _empty
+
+
+def _format_research_for_claude(research: dict, mode: str = "blueprint") -> str:
+    """Convert Gemini's web research JSON into readable text for Claude."""
+    if not research:
+        return ""
+
+    lines = ["WEB RESEARCH (from Gemini):"]
+
+    if mode in ("mechanic", "quote_check"):
+        for fix in research.get("forum_fixes", [])[:5]:
+            lines.append(f"\nFORUM FIX ({fix.get('source', '?')}):")
+            lines.append(f"  {fix.get('summary', '?')}")
+            if fix.get('url'):
+                lines.append(f"  URL: {fix['url']}")
+
+        for tsb in research.get("tsbs", [])[:3]:
+            lines.append(f"\nTSB {tsb.get('number', '?')}: {tsb.get('title', '?')}")
+            lines.append(f"  {tsb.get('summary', '?')}")
+
+        nhtsa = research.get("nhtsa_complaints", {})
+        if nhtsa.get("count"):
+            lines.append(f"\nNHTSA: {nhtsa['count']} complaints filed")
+            lines.append(f"  Top complaint: {nhtsa.get('top_complaint', '?')}")
+
+        for recall in research.get("recalls", [])[:3]:
+            lines.append(f"\nRECALL {recall.get('number', '?')}: {recall.get('description', '?')}")
+            lines.append(f"  Remedy: {recall.get('remedy', '?')}")
+
+        for ew in research.get("extended_warranties", [])[:2]:
+            lines.append(f"\nEXTENDED WARRANTY: {ew.get('campaign', '?')}")
+            lines.append(f"  {ew.get('description', '?')}")
+
+        for part in research.get("parts_pricing", [])[:5]:
+            lines.append(f"\nPART: {part.get('part', '?')} — PN: {', '.join(part.get('part_numbers', []))}")
+            for p in part.get("prices", [])[:3]:
+                lines.append(f"  {p.get('source', '?')}: {p.get('price', '?')}")
+
+        for vid in research.get("youtube_videos", [])[:3]:
+            lines.append(f"\nVIDEO: {vid.get('title', '?')} ({vid.get('duration', '?')})")
+            lines.append(f"  {vid.get('url', '?')}")
+
+    else:
+        for proj in research.get("similar_projects", [])[:3]:
+            lines.append(f"\nSIMILAR PROJECT ({proj.get('source', '?')}): {proj.get('title', '?')}")
+            lines.append(f"  Insight: {proj.get('key_insight', '?')}")
+            if proj.get('url'):
+                lines.append(f"  URL: {proj['url']}")
+
+        for vid in research.get("youtube_builds", [])[:3]:
+            lines.append(f"\nYOUTUBE: {vid.get('title', '?')} ({vid.get('duration', '?')})")
+            lines.append(f"  {vid.get('url', '?')}")
+
+        for part in research.get("gap_parts_pricing", [])[:5]:
+            lines.append(f"\nPART: {part.get('part', '?')} — {part.get('source', '?')}: {part.get('price', '?')}")
+
+        for note in research.get("safety_notes", [])[:3]:
+            lines.append(f"\nSAFETY: {note}")
+
+    summary = research.get("research_summary", "")
+    if summary:
+        lines.append(f"\nRESEARCH SUMMARY:\n{summary}")
+
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -949,6 +1136,53 @@ def _mechanic_claude_system(detail_level: str, conception_context: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# QUOTE CHECK MODE — CONSUMER PROTECTION PROMPTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _quote_check_grok_system(conception_context: str) -> str:
+    return (
+        "You are GROK-3, an expert automotive cost analyst on AoC3P0 Builder Foundry.\n\n"
+        "A vehicle owner received a repair quote and wants to know if it's fair.\n\n"
+        "Return ONLY valid JSON:\n"
+        '{\n'
+        '  "repair_analysis": {\n'
+        '    "description": "what this repair involves",\n'
+        '    "parts_needed": [{"part":"...","fair_price_range":"$X-$Y"}],\n'
+        '    "labor_hours_fair": "X-Y hours",\n'
+        '    "fair_total_range": "$X-$Y",\n'
+        '    "common_upsells": ["unnecessary extras shops add"]\n'
+        '  },\n'
+        '  "vehicle_context": {\n'
+        '    "known_issues": ["common problems at this mileage"],\n'
+        '    "recalls_possible": true/false,\n'
+        '    "extended_warranty_possible": true/false\n'
+        '  },\n'
+        '  "quote_assessment": "high|fair|low",\n'
+        '  "analysis_summary": "2-paragraph summary"\n'
+        '}\n'
+        + (f"\nCONCEPTION DATA:\n{conception_context}" if conception_context else "")
+    )
+
+
+def _quote_check_claude_system(conception_context: str) -> str:
+    return (
+        "You are CLAUDE-SONNET, a consumer advocate and automotive repair expert "
+        "on AoC3P0 Builder Foundry.\n\n"
+        "A vehicle owner received a repair quote. Write in PLAIN ENGLISH.\n\n"
+        "SECTIONS:\n"
+        "1. QUOTE VERDICT — FAIR, HIGH, VERY HIGH, or RED FLAG with fair range\n"
+        "2. WARRANTY & RECALL CHECK — any coverage that makes this FREE?\n"
+        "3. FAIR COST BREAKDOWN — parts + labor table with fair prices\n"
+        "4. WHY THE QUOTE MIGHT BE HIGH — dealer markup, padded labor, extras\n"
+        "5. WHAT TO DO — step-by-step action plan with what to say\n"
+        "6. COMMUNITY DATA — how many others had this, what they paid\n"
+        "7. REFERENCES — links, recall databases, parts pricing\n\n"
+        "Be HONEST. If the quote IS fair, say so clearly.\n"
+        + (f"\nCONCEPTION DATA:\n{conception_context}" if conception_context else "")
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FORGE PIPELINE
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -957,7 +1191,7 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
                            mode: str = "blueprint", task=None) -> dict:
     timings = {}
     _heartbeat_active = True
-    is_mechanic = (mode == "mechanic")
+    is_mechanic = (mode in ("mechanic", "quote_check"))
 
     def _update(msg: str):
         if task:
@@ -983,16 +1217,20 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
             ctx = await _recall_conception_memory(user_email, junk_desc, project_type)
         timings["recall"] = t.elapsed
 
-        # 1 — Grok
+        # 1 — Grok + Gemini Research IN PARALLEL
         if is_mechanic:
-            _update("GROK-3 diagnosing engine... analyzing fault patterns")
+            _update("GROK-3 diagnosing engine + GEMINI searching web for real fixes...")
         else:
-            _update("GROK-3 disassembling inventory... identifying harvestable components")
-        with _Timer("Grok") as t:
-            grok_r = await _run_grok(junk_desc, project_type, detail_level, ctx, mode=mode)
-        timings["grok"] = t.elapsed
+            _update("GROK-3 analyzing inventory + GEMINI searching maker projects...")
+        with _Timer("Grok + Gemini Research") as t:
+            grok_r, research_r = await asyncio.gather(
+                _run_grok(junk_desc, project_type, detail_level, ctx, mode=mode),
+                _run_gemini_research(project_type, mode=mode),
+            )
+        timings["grok_and_research"] = t.elapsed
         grok_analysis = grok_r["analysis"]
         grok_ok = not _grok_failed(grok_analysis)
+        web_research = research_r.get("research", {})
 
         if not grok_ok:
             if is_mechanic:
@@ -1000,23 +1238,27 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
             else:
                 _update("GROK-3 incomplete — CLAUDE analyzing inventory directly")
 
-        # 2 — Claude
+        # Format research for Claude
+        research_text = _format_research_for_claude(web_research, mode=mode)
+
+        # 2 — Claude (gets Grok analysis + Gemini research)
         if is_mechanic:
-            _update("CLAUDE writing field repair procedure...")
+            _update("CLAUDE writing field repair procedure with real-world data...")
         else:
-            _update("CLAUDE drafting engineering blueprint...")
+            _update("CLAUDE drafting engineering blueprint with maker research...")
         with _Timer("Claude Blueprint") as t:
             claude_r = await _run_claude(junk_desc, project_type, grok_analysis,
-                                         detail_level, ctx, grok_ok, mode=mode)
+                                         detail_level, ctx, grok_ok, mode=mode,
+                                         research_text=research_text)
         timings["claude"] = t.elapsed
         blueprint = claude_r["blueprint"]
 
-        # 3 + 4 — Gemini + Schematic PARALLEL (skip schematic in mechanic mode)
+        # 3 + 4 — Gemini Review + Schematic PARALLEL (skip schematic in mechanic mode)
         if is_mechanic:
             _update("GEMINI verifying repair procedure...")
             with _Timer("Gemini Review") as t:
                 gemini_r = await _run_gemini(blueprint, project_type, ctx)
-            timings["parallel"] = t.elapsed
+            timings["review"] = t.elapsed
             schematic_svg = ""
         else:
             _update("GEMINI reviewing + rendering schematic...")
@@ -1025,7 +1267,7 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
                     _run_gemini(blueprint, project_type, ctx),
                     _generate_schematic(blueprint, project_type, junk_desc),
                 )
-            timings["parallel"] = t.elapsed
+            timings["review"] = t.elapsed
 
     finally:
         _heartbeat_active = False
@@ -1059,16 +1301,19 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
     def _db_save():
         grok_text = (json.dumps(grok_analysis, indent=2) if isinstance(grok_analysis, dict)
                      else str(grok_analysis))
+        research_json = json.dumps(web_research) if web_research else None
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO builds
                         (user_email, junk_desc, project_type, blueprint,
-                         grok_notes, claude_notes, tokens_used, conception_ready)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                         grok_notes, claude_notes, tokens_used, conception_ready,
+                         mode, web_research)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (user_email, junk_desc[:5000], project_type, blueprint,
                      grok_text[:5000], notes.get("review_notes", "")[:2000],
-                     total_tokens, notes.get("conception_ready", False)),
+                     total_tokens, notes.get("conception_ready", False),
+                     mode, research_json),
                 )
                 bid = cur.fetchone()[0]
                 conn.commit()
@@ -1126,6 +1371,8 @@ async def _forge_pipeline(user_email: str, junk_desc: str,
         "costs":            costs,
         "grok_ok":          grok_ok,
         "grok_structured":  isinstance(grok_analysis, dict),
+        "mode":             mode,
+        "web_research":     web_research,
         "conception_context_used": bool(ctx),
         "email_sent":       email_sent,
     }
