@@ -124,14 +124,18 @@ def _show_schematic(schematic: str, build_id: str):
     st.markdown("---")
 
 
-def _poll_task(task_key: str, attempts_key: str, max_attempts: int = 40,
+def _poll_task(task_key: str, attempts_key: str, status_base_url: str,
+               max_attempts: int = 40,
                label: str = "PROCESSING", color: str = "#FF4500",
                complete_title: str = "COMPLETE", dl_suffix: str = "",
                show_schematic: bool = False,
                timeout_msg: str = "Task timed out. Try again.",
                fail_msg: str = "Task failed. Try again.",
-               archive_msg: str = "Archived in Conception DNA Vault."):
-    """Shared polling loop for all async AI tasks (forge/mechanic/quote/scan)."""
+               archive_msg: str = "Archived in Conception DNA Vault.",
+               on_complete=None):
+    """Generic poller for ANY service (AI, Workshop, etc.).
+    If on_complete is provided, it's called with the full result dict
+    for custom rendering (e.g. scanner components list)."""
     task_id = st.session_state.get(task_key)
     if not task_id:
         return
@@ -145,7 +149,7 @@ def _poll_task(task_key: str, attempts_key: str, max_attempts: int = 40,
         return
 
     st.markdown("---")
-    result = api_get(f"{AI_URL}/generate/status/{task_id}", timeout=15.0)
+    result = api_get(f"{status_base_url}{task_id}", timeout=15.0)
 
     if isinstance(result, APIError):
         st.warning(f"Polling interrupted: {result.detail}")
@@ -158,18 +162,21 @@ def _poll_task(task_key: str, attempts_key: str, max_attempts: int = 40,
 
     if state == "complete":
         st.balloons()
-        st.markdown(f"#### {complete_title}")
-        res = result.get("result", {})
-        content = res.get("content", "")
-        build_id = res.get("build_id", "")
-        schematic = res.get("schematic_svg", "")
+        if on_complete:
+            on_complete(result)
+        else:
+            st.markdown(f"#### {complete_title}")
+            res = result.get("result", {})
+            content = res.get("content", "")
+            build_id = res.get("build_id", "")
+            schematic = res.get("schematic_svg", "") if show_schematic else None
 
-        if show_schematic and schematic:
-            _show_schematic(schematic, build_id)
-        st.markdown(content)
-        if build_id:
-            _download_buttons(build_id, key_suffix=dl_suffix)
-        st.info(archive_msg)
+            if show_schematic and schematic:
+                _show_schematic(schematic, build_id)
+            st.markdown(content)
+            if build_id:
+                _download_buttons(build_id, key_suffix=dl_suffix)
+            st.info(archive_msg)
         st.session_state[task_key] = None
         st.session_state[attempts_key] = 0
 
@@ -973,6 +980,7 @@ if st.session_state.active_tab == "forge":
     # ── TASK POLLING ──
     _poll_task(
         task_key="active_task", attempts_key="forge_attempts",
+        status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="ROUND TABLE ACTIVE", color="#FF4500",
         complete_title="SYNTHESIS COMPLETE", show_schematic=True,
         timeout_msg="Forge timed out. The server may be under heavy load. Try again.",
@@ -1099,46 +1107,23 @@ elif st.session_state.active_tab == "scanner":
                         st.rerun()
 
     with col_right:
-        if st.session_state.scan_task:
-            task_id = st.session_state.scan_task
-            max_scan_attempts = 20  # 20 x 3s = 60s max wait
+        def _on_scan_complete(result):
+            scan_data = result.get("result", {}).get("scan_result", {})
+            ident = scan_data.get("identification", {})
+            comps = scan_data.get("components", [])
+            st.success(f"**{ident.get('equipment_name', 'Unknown Equipment')}**")
+            st.markdown("#### Identified Components")
+            for c in comps:
+                st.markdown(f"- **{c.get('name', '?')}** x {c.get('quantity', '?')}")
 
-            if st.session_state.scan_attempts >= max_scan_attempts:
-                st.error("Scan timed out. Try again or use a different image.")
-                st.session_state.scan_task = None
-                st.session_state.scan_attempts = 0
-            else:
-                # Show progress
-                progress = st.session_state.scan_attempts / max_scan_attempts
-                remaining = max_scan_attempts - st.session_state.scan_attempts
-                st.progress(progress, text=f"Analyzing... ({remaining * 3}s remaining)")
-
-                result = api_get(f"{WORKSHOP_URL}/task/status/{task_id}")
-
-                if isinstance(result, APIError):
-                    st.info("Waiting for scan result...")
-                    st.session_state.scan_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
-                elif result.get("status") == "complete":
-                    scan_data = result.get("result", {}).get("scan_result", {})
-                    ident = scan_data.get("identification", {})
-                    comps = scan_data.get("components", [])
-                    st.success(f"**{ident.get('equipment_name', 'Unknown Equipment')}**")
-                    st.markdown("#### Identified Components")
-                    for c in comps:
-                        st.markdown(f"- **{c.get('name', '?')}** x {c.get('quantity', '?')}")
-                    st.session_state.scan_task = None
-                    st.session_state.scan_attempts = 0
-                elif result.get("status") == "failed":
-                    st.error("Scan failed. Try another image.")
-                    st.session_state.scan_task = None
-                    st.session_state.scan_attempts = 0
-                else:
-                    st.info("Gemini Vision analyzing... please wait.")
-                    st.session_state.scan_attempts += 1
-                    time.sleep(3)
-                    st.rerun()
+        _poll_task(
+            task_key="scan_task", attempts_key="scan_attempts",
+            status_base_url=f"{WORKSHOP_URL}/task/status/",
+            max_attempts=20, label="GEMINI VISION ANALYSIS", color="#10B981",
+            timeout_msg="Scan timed out. Try again or use a different image.",
+            fail_msg="Scan failed. Try another image.",
+            on_complete=_on_scan_complete
+        )
 
     # Scan history
     st.markdown("---")
@@ -1396,6 +1381,7 @@ elif st.session_state.active_tab == "mechanic":
     # ── MECHANIC TASK POLLING ──
     _poll_task(
         task_key="mechanic_task", attempts_key="mechanic_attempts",
+        status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="DIAGNOSTIC ACTIVE", color="#F59E0B",
         complete_title="REPAIR PROCEDURE READY", dl_suffix="_mech",
         timeout_msg="Diagnosis timed out. Try again or simplify the symptoms.",
@@ -1517,6 +1503,7 @@ elif st.session_state.active_tab == "quote_check":
     # ── QUOTE CHECK POLLING ──
     _poll_task(
         task_key="quote_task", attempts_key="quote_attempts",
+        status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="QUOTE ANALYSIS", color="#10B981",
         complete_title="QUOTE ANALYSIS COMPLETE", dl_suffix="_qc",
         timeout_msg="Analysis timed out. Try again.",
