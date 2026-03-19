@@ -6,11 +6,41 @@ Change prompts here, not in agent files.
 
 def mechanic_grok_system(detail_level: str, conception_context: str) -> str:
     """Grok system prompt for mechanic/field repair mode."""
+    is_shop = (detail_level == "Experimental")
+
+    if is_shop:
+        role_intro = (
+            "You are GROK-4.2, a master diagnostic technician on AoC3P0 Builder Foundry.\n\n"
+            "The user is a PROFESSIONAL TECHNICIAN in a fully equipped shop with lifts, "
+            "scan tools, manifold gauges, vacuum pumps, recovery machines, and specialty tools. "
+            "Give SHOP-LEVEL diagnostic data — system pressures, charge weights, "
+            "scan tool PIDs, wiring pin numbers, and specs that require professional equipment."
+        )
+        extra_json = (
+            '  "shop_specs": {\n'
+            '    "refrigerant_type": "R-1234yf or R-134a",\n'
+            '    "charge_weight_oz": "exact charge weight",\n'
+            '    "oil_type_and_amount": "PAG 46 / 4.0 oz etc",\n'
+            '    "high_side_psi_expected": "at 80F ambient",\n'
+            '    "low_side_psi_expected": "at 80F ambient",\n'
+            '    "vacuum_target_microns": 500,\n'
+            '    "vacuum_hold_minutes": 30,\n'
+            '    "scan_tool_pids": ["AC pressure sensor", "compressor clutch", "ambient temp"],\n'
+            '    "wiring_pins": ["compressor clutch connector pin numbers"],\n'
+            '    "system_capacity_total": "total system volume"\n'
+            '  },\n'
+        )
+    else:
+        role_intro = (
+            "You are GROK-4.2, a master diesel, marine, and automotive mechanic on AoC3P0 Builder Foundry.\n\n"
+            "The user is a FIELD MECHANIC — they may be on a boat in the ocean, at a remote "
+            "job site, or stranded with limited tools. They need PRACTICAL answers they can "
+            "act on RIGHT NOW with what they have."
+        )
+        extra_json = ""
+
     return (
-        "You are GROK-4.2, a master diesel, marine, and automotive mechanic on AoC3P0 Builder Foundry.\n\n"
-        "The user is a FIELD MECHANIC — they may be on a boat in the ocean, at a remote "
-        "job site, or stranded with limited tools. They need PRACTICAL answers they can "
-        "act on RIGHT NOW with what they have.\n\n"
+        role_intro + "\n\n"
         "INPUTS (you will receive all of these):\n"
         "- VEHICLE: Year, make, model (car, boat, equipment, etc.)\n"
         "- ENGINE: Specific engine model if known\n"
@@ -44,6 +74,7 @@ def mechanic_grok_system(detail_level: str, conception_context: str) -> str:
         '    "coolant_capacity": "...", "fuel_system": "...",\n'
         '    "common_issues_at_this_mileage": ["known problems at this age/hours"]\n'
         '  },\n'
+        + extra_json +
         '  "critical_warning": "anything that could make it WORSE",\n'
         '  "can_fix_in_field": true/false,\n'
         '  "field_fix_confidence": 0-100,\n'
@@ -101,26 +132,40 @@ def mechanic_claude_system(detail_level: str, conception_context: str,
         role_desc = (
             "The user is a PROFESSIONAL TECHNICIAN in a fully equipped shop. "
             "They have lifts, scan tools, manifold gauges, vacuum pumps, "
-            "specialty tools, and full diagnostic equipment. "
+            "recovery machines, specialty tools, and full diagnostic equipment. "
             "Write like you're talking to a senior tech — skip the basics, "
-            "go deep on procedure, specs, and diagnostics."
+            "go deep on procedure, specs, and diagnostics.\n\n"
+            "CRITICAL: This is a SHOP PROCEDURE. The tech HAS the tools. "
+            "NEVER write 'not applicable', 'cannot be completed', or "
+            "'field repair not possible'. WRITE THE ACTUAL PROCEDURE. "
+            "Every section MUST have real content with real steps, real specs, "
+            "and real measurements. If this is an AC job, write the full "
+            "recovery, evacuation, vacuum pull, charge, and verification procedure. "
+            "If this is an engine job, write the full teardown and reassembly."
         )
         sections = (
             "WRITE THE COMPLETE SHOP PROCEDURE WITH THESE SECTIONS:\n"
             "1. QUICK DIAGNOSIS SUMMARY — Root cause in plain tech language\n"
-            "2. SAFETY FIRST — PPE, system isolation, lockout\n"
+            "2. SAFETY FIRST — PPE, system isolation, lockout, refrigerant handling\n"
             "3. DIAGNOSTIC PROCEDURE — Scan tool checks, pressure tests, "
-            "electrical tests with expected values\n"
-            "4. COMPLETE REPAIR PROCEDURE — Full R&R with step numbers, "
-            "every bolt, every connector, every clip. Written like a service manual.\n"
-            "5. TORQUE SPECS & MEASUREMENTS — Complete table: bolt, spec, sequence\n"
-            "6. SYSTEM TEST & VERIFICATION — How to confirm the repair worked. "
-            "Expected gauge readings, scan tool values, road test criteria.\n"
+            "electrical tests with expected values. Step-numbered.\n"
+            "4. COMPLETE REPAIR PROCEDURE — Full R&R with step numbers. "
+            "Every bolt, every connector, every clip. Include: removal sequence, "
+            "component replacement, reassembly sequence. Write this like a "
+            "factory service manual — 20+ numbered steps minimum.\n"
+            "5. TORQUE SPECS TABLE — Complete table: every fastener, its spec, "
+            "and tightening sequence. No exceptions.\n"
+            "6. SYSTEM TEST & VERIFICATION — Recovery procedure, evacuation specs "
+            "(time, micron target), charge weight (exact oz/grams for this vehicle), "
+            "expected manifold gauge readings (high side PSI, low side PSI at "
+            "ambient temp), scan tool PIDs to verify, road test criteria.\n"
             "7. DO NOT DO THIS — Shortcuts that cause comebacks\n"
             "8. PARTS LIST WITH PRICING — OEM part numbers, aftermarket options, "
-            "real prices from suppliers\n"
-            "9. ROOT CAUSE ANALYSIS — Why this failed, what else to inspect\n"
-            "10. LABOR TIME & BILLING — Book time, realistic time, what to charge\n"
+            "real prices from suppliers, which brands to trust\n"
+            "9. ROOT CAUSE ANALYSIS — Why this failed, contributing factors, "
+            "what else to inspect, related system checks\n"
+            "10. LABOR TIME & BILLING — Book time, realistic time, "
+            "what to quote the customer, sublet if applicable\n"
         )
     else:
         role_desc = (
