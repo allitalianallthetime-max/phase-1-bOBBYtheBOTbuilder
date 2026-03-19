@@ -184,6 +184,22 @@ def render():
                 )
                 tools_desc = tools_input.strip() if tools_input else "Basic hand tools only"
 
+                # Experimental = shop mode — always assume full shop equipment
+                if mech_detail == "Experimental":
+                    shop_equipment = (
+                        "FULL SHOP EQUIPMENT: Vehicle lift, manifold gauge set, "
+                        "R-1234yf/R-134a recovery/recycling machine, vacuum pump (500 micron capable), "
+                        "electronic leak detector, UV dye kit, refrigerant scale, "
+                        "scan tool with live data/PIDs, multimeter, torque wrench set, "
+                        "AC line disconnect tools, spring lock coupling tools, "
+                        "refrigerant identifier, nitrogen regulator for pressure testing, "
+                        "complete hand tool set, air tools, parts washer"
+                    )
+                    if tools_desc == "Basic hand tools only":
+                        tools_desc = shop_equipment
+                    else:
+                        tools_desc = f"{tools_desc}\n\nADDITIONAL {shop_equipment}"
+
                 with st.spinner("Waking diagnostic agents..."):
                     awake = False
                     for attempt in range(3):
