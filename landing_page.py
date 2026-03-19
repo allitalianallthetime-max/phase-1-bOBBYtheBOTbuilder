@@ -54,7 +54,8 @@ def render():
             <p style="color:#E2E8F0; font-size:24px; margin:20px auto 0; max-width:780px; line-height:1.5;">
                 Three AI agents. Real web research. Real results.</p>
             <p style="color:#94A3B8; font-size:16px; margin:8px auto 28px; max-width:650px;">
-                Build from scrap. Diagnose any engine. Verify any repair quote.</p>
+                For field mechanics, home techs, repair shops, and builders.
+                Diagnose any engine. Verify any quote. Build from scrap.</p>
             <a href="#trial-section" class="bf-cta">START YOUR FREE BUILD →</a>
         </div>
     """, unsafe_allow_html=True)
@@ -98,12 +99,14 @@ def render():
               <div style='color:#10B981; font-weight:800; font-size:22px;
                           letter-spacing:1px;'>FIELD MECHANIC</div>
               <div style='color:#64748B; font-size:11px; letter-spacing:2px;
-                          margin:8px 0 20px;'>FOR MECHANICS &amp; TECHS</div>
+                          margin:8px 0 20px;'>FOR FIELD TECHS &amp; REPAIR SHOPS</div>
               <div style='color:#CBD5E1; font-size:14px; line-height:1.7;'>
                 Enter your vehicle, engine, symptoms, and tools on hand.
                 AI diagnoses the problem, searches real forums for verified fixes,
                 finds TSBs and recalls, and writes a step-by-step repair procedure
-                with <strong style='color:#10B981;'>real torque specs and part prices</strong>.</div>
+                with <strong style='color:#10B981;'>real torque specs and part prices</strong>.
+                <br><br>Shops: run Experimental depth for full R&amp;R procedures with
+                labor time guides and scan tool PIDs.</div>
               <div style='color:#F59E0B; font-size:12px; margin-top:20px;
                           border-top:1px solid #334155; padding-top:12px;'>
                 Marine &#8226; Automotive &#8226; Heavy equipment
@@ -148,6 +151,56 @@ def render():
             <div style='border-left:1px solid #334155; padding-left:50px;'>
               <div style='color:#F59E0B; font-size:44px; font-weight:800;'>4</div>
               <div style='color:#64748B; font-size:14px; margin-top:4px;'>Frontier AI models<br>on YOUR specific problem.</div>
+            </div>
+          </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # ── FOR SHOPS & FLEETS ──
+    st.markdown("""
+        <div style='max-width:900px; margin:50px auto; padding:0 20px;'>
+          <div style='text-align:center; margin-bottom:24px;'>
+            <h2 style='color:#F59E0B; font-size:32px;'>Run A Shop? This Is Your New Secret Weapon.</h2>
+          </div>
+          <div style='display:flex; gap:16px; flex-wrap:wrap; justify-content:center;'>
+            <div style='background:linear-gradient(135deg, #1E293B, #0F172A); border-radius:12px;
+                        padding:24px; flex:1; min-width:250px; max-width:300px;
+                        border:1px solid #F59E0B;'>
+              <div style='color:#F59E0B; font-size:15px; font-weight:bold; margin-bottom:8px;'>
+                &#128736; Replace AllData &amp; Mitchell</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.7;'>
+                Full shop procedures with torque specs, scan tool PIDs,
+                manifold gauge readings, and labor time guides. $3.33 per job
+                instead of $199/month. Cancel nothing — pay when you use it.</div>
+            </div>
+            <div style='background:linear-gradient(135deg, #1E293B, #0F172A); border-radius:12px;
+                        padding:24px; flex:1; min-width:250px; max-width:300px;
+                        border:1px solid #F59E0B;'>
+              <div style='color:#F59E0B; font-size:15px; font-weight:bold; margin-bottom:8px;'>
+                &#128203; Generate Repair Estimates</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.7;'>
+                Every diagnosis includes real part numbers and pricing.
+                Hand your customer a professional estimate with the AI's
+                confidence level. Builds trust. Closes jobs faster.</div>
+            </div>
+            <div style='background:linear-gradient(135deg, #1E293B, #0F172A); border-radius:12px;
+                        padding:24px; flex:1; min-width:250px; max-width:300px;
+                        border:1px solid #F59E0B;'>
+              <div style='color:#F59E0B; font-size:15px; font-weight:bold; margin-bottom:8px;'>
+                &#128101; Train Your Junior Techs</div>
+              <div style='color:#94A3B8; font-size:13px; line-height:1.7;'>
+                New tech stuck on a job? Run a Standard diagnosis for $1.50.
+                AI walks them through it step by step. Cheaper than their
+                mistakes. Faster than you explaining it again.</div>
+            </div>
+          </div>
+          <div style='text-align:center; margin-top:20px;'>
+            <div style='display:inline-block; background:linear-gradient(135deg, #1E293B, #0F172A);
+                        border-radius:10px; padding:16px 32px; border:1px solid #334155;'>
+              <span style='color:#F59E0B; font-size:15px; font-weight:bold;'>
+                SHOP PASS: 100 tokens for $149.99</span>
+              <span style='color:#94A3B8; font-size:13px;'>
+                &nbsp;— $1.50/diagnosis &nbsp;|&nbsp; Never expires</span>
             </div>
           </div>
         </div>
