@@ -191,7 +191,7 @@ def render():
                             st.success("Diagnostic agents deployed...")
 
     # ── MECHANIC TASK POLLING ──
-    _poll_task(
+    poll_task(
         task_key="mechanic_task", attempts_key="mechanic_attempts",
         status_base_url=f"{AI_URL}/generate/status/",
         max_attempts=40, label="DIAGNOSTIC ACTIVE", color="#F59E0B",
