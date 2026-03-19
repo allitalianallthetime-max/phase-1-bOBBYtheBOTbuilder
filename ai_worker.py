@@ -374,8 +374,7 @@ async def _run_grok_inner(junk_desc: str, project_type: str,
     if mode == "mechanic":
         system = _mechanic_grok_system(detail_level, conception_context)
         user_msg = (
-            f"ENGINE/EQUIPMENT:\n{project_type}\n\n"
-            f"SYMPTOM/FAULT:\n{project_type}\n\n"
+            f"{project_type}\n\n"
             f"AVAILABLE TOOLS & PARTS:\n{_truncate(junk_desc, 3000)}\n\n"
             f"Diagnose the issue. Return ONLY the JSON structure."
         )
@@ -552,15 +551,20 @@ def _format_grok_for_mechanic(grok_analysis) -> str:
         lines.append(f"  Symptoms: {d.get('symptoms_match', '?')}")
         lines.append("")
 
+    ruled = grok_analysis.get("ruled_out", [])
+    if ruled:
+        lines.append(f"ALREADY RULED OUT: {', '.join(ruled)}\n")
+
     specs = grok_analysis.get("engine_specs", {})
     if specs:
         lines.append("ENGINE SPECS:")
+        skip_keys = {"common_issues", "common_issues_at_this_mileage"}
         for k, v in specs.items():
-            if k != "common_issues":
+            if k not in skip_keys:
                 lines.append(f"  {k}: {v}")
-        issues = specs.get("common_issues", [])
+        issues = specs.get("common_issues_at_this_mileage") or specs.get("common_issues", [])
         if issues:
-            lines.append(f"  COMMON ISSUES: {', '.join(issues)}")
+            lines.append(f"  COMMON ISSUES AT THIS MILEAGE: {', '.join(issues)}")
         lines.append("")
 
     warning = grok_analysis.get("critical_warning", "")
@@ -596,10 +600,11 @@ def _run_claude_sync(junk_desc: str, project_type: str,
 
         user_content = (
             f"GROK-3 DIAGNOSTIC ANALYSIS:\n{grok_text}\n\n"
-            f"ENGINE/EQUIPMENT & SYMPTOM:\n{project_type}\n\n"
+            f"REPAIR REQUEST:\n{project_type}\n\n"
             f"AVAILABLE TOOLS & PARTS:\n{tools_text}\n\n"
             f"Write the complete field repair procedure. Use ONLY available tools. "
-            f"Include the emergency jury-rig option."
+            f"Include the emergency jury-rig option. DO NOT suggest anything "
+            f"listed under ALREADY TRIED."
         )
     else:
         detail_map = {
@@ -834,14 +839,25 @@ async def _generate_schematic(blueprint: str, project_type: str,
 def _mechanic_grok_system(detail_level: str, conception_context: str) -> str:
     """Grok system prompt for mechanic/field repair mode."""
     return (
-        "You are GROK-3, a master diesel and marine mechanic on AoC3P0 Builder Foundry.\n\n"
+        "You are GROK-3, a master diesel, marine, and automotive mechanic on AoC3P0 Builder Foundry.\n\n"
         "The user is a FIELD MECHANIC — they may be on a boat in the ocean, at a remote "
         "job site, or stranded with limited tools. They need PRACTICAL answers they can "
         "act on RIGHT NOW with what they have.\n\n"
-        "INPUTS:\n"
-        "- ENGINE/EQUIPMENT: The specific make, model, and type they're working on\n"
+        "INPUTS (you will receive all of these):\n"
+        "- VEHICLE: Year, make, model (car, boat, equipment, etc.)\n"
+        "- ENGINE: Specific engine model if known\n"
+        "- MILEAGE/HOURS: How much use the vehicle/equipment has\n"
+        "- ENVIRONMENT: Marine, automotive, heavy equipment, agricultural, etc.\n"
         "- SYMPTOM/FAULT: What's wrong — symptoms, fault codes, or observed behavior\n"
-        "- AVAILABLE TOOLS/PARTS: What they physically have with them RIGHT NOW\n\n"
+        "- ALREADY TRIED: What the mechanic has already done — DO NOT suggest these again\n"
+        "- AVAILABLE TOOLS/PARTS: What they physically have RIGHT NOW\n\n"
+        "CRITICAL RULES:\n"
+        "- Use the MILEAGE/HOURS to inform your diagnosis — a 3000-hour diesel has "
+        "different likely failures than a 300-hour diesel\n"
+        "- NEVER suggest something the mechanic already tried — acknowledge it and move past it\n"
+        "- Be SPECIFIC to the exact vehicle and engine, not generic\n"
+        "- If the vehicle is a boat, consider marine-specific issues (raw water, corrosion, "
+        "zincs, sea strainers, heat exchangers)\n\n"
         "YOUR JOB — DIAGNOSTIC ANALYSIS:\n"
         "Return ONLY valid JSON with this structure:\n"
         '{\n'
@@ -849,24 +865,24 @@ def _mechanic_grok_system(detail_level: str, conception_context: str) -> str:
         '    {\n'
         '      "likely_cause": "description",\n'
         '      "probability": "high|medium|low",\n'
-        '      "how_to_verify": "specific test the mechanic can do with available tools",\n'
+        '      "how_to_verify": "specific test using AVAILABLE tools",\n'
         '      "symptoms_match": "which reported symptoms point to this cause"\n'
         '    }\n'
         '  ],\n'
+        '  "ruled_out": ["things already tried that eliminate certain causes"],\n'
         '  "engine_specs": {\n'
         '    "displacement": "...", "power": "...", "torque": "...",\n'
         '    "oil_capacity": "...", "oil_type": "...",\n'
         '    "coolant_capacity": "...", "fuel_system": "...",\n'
-        '    "common_issues": ["known problems with this engine"]\n'
+        '    "common_issues_at_this_mileage": ["known problems at this age/hours"]\n'
         '  },\n'
-        '  "critical_warning": "anything that could make it WORSE if they do the wrong thing",\n'
+        '  "critical_warning": "anything that could make it WORSE",\n'
         '  "can_fix_in_field": true/false,\n'
         '  "field_fix_confidence": 0-100,\n'
         '  "diagnostic_summary": "2-paragraph summary"\n'
         '}\n\n'
         "HONESTY: If you're not sure about a spec, mark it [EST]. If the engine is "
         "unfamiliar, say so. A wrong spec on a marine diesel can sink a boat.\n"
-        "Be SPECIFIC to the exact engine model, not generic.\n"
         + (f"\nCONCEPTION BRIEF:\n{conception_context}" if conception_context else "")
     )
 
@@ -896,15 +912,22 @@ def _mechanic_claude_system(detail_level: str, conception_context: str,
     }
 
     return (
-        "You are CLAUDE-SONNET, a senior marine and diesel mechanic engineer "
+        "You are CLAUDE-SONNET, a senior marine, diesel, and automotive mechanic engineer "
         "on AoC3P0 Builder Foundry.\n\n"
         "The user is a FIELD MECHANIC working in tough conditions — possibly "
         "on a boat at sea, at a remote site, or under time pressure. They need "
         "CLEAR, STEP-BY-STEP instructions they can follow with LIMITED TOOLS.\n\n"
+        "YOU WILL RECEIVE:\n"
+        "- Vehicle year/make/model and engine\n"
+        "- Mileage or hours (use this to inform your diagnosis)\n"
+        "- Symptoms and fault codes\n"
+        "- What they have ALREADY TRIED — DO NOT repeat these suggestions\n"
+        "- Available tools and parts\n\n"
         "WRITE THE REPAIR PROCEDURE WITH THESE SECTIONS:\n"
         "1. QUICK DIAGNOSIS SUMMARY — What's most likely wrong, in plain language\n"
         "2. SAFETY FIRST — What to shut down/disconnect before starting\n"
-        "3. DIAGNOSTIC STEPS — Systematic checks to confirm the root cause\n"
+        "3. DIAGNOSTIC STEPS — Systematic checks to confirm root cause "
+        "(skip anything they already tried — acknowledge it was ruled out)\n"
         "4. FIELD REPAIR PROCEDURE — Step-by-step using ONLY available tools/parts\n"
         "5. TORQUE SPECS & MEASUREMENTS — Every bolt, every spec, every tolerance\n"
         "6. EMERGENCY JURY-RIG — If proper repair isn't possible, what's the safe "
@@ -912,7 +935,9 @@ def _mechanic_claude_system(detail_level: str, conception_context: str,
         "7. DO NOT DO THIS — Common mistakes that make this problem WORSE\n"
         "8. PARTS NEEDED AT PORT — What to order/buy when they reach civilization\n\n"
         "CRITICAL RULES:\n"
-        "- Be SPECIFIC to the engine model. A Cummins 6BTA is not a CAT 3126.\n"
+        "- Be SPECIFIC to the vehicle and engine model\n"
+        "- Consider MILEAGE/HOURS — high-mileage failures differ from low-mileage ones\n"
+        "- NEVER suggest something they already tried — acknowledge it and move on\n"
         "- Torque specs MUST be for the actual engine, marked [KNOWN] or [EST]\n"
         "- If a field fix could cause MORE damage, say so clearly\n"
         "- Always include the 'get home safe' option even if it's imperfect\n"
