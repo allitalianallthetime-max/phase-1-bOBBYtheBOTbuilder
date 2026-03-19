@@ -40,14 +40,38 @@ app = FastAPI(title="Builder Foundry AI Service", version="1.0.0")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 celery_app = Celery("ai_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
-# ── REDIS (for Arena chat) ────────────────────────────────────────────────────
+# ── REDIS (for rate limiting + Arena chat) ────────────────────────────────────
 try:
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.ping()
-    log.info("Redis connected for Arena chat.")
+    log.info("Redis connected.")
 except Exception as e:
-    log.warning("Redis unavailable for Arena chat: %s", e)
+    log.warning("Redis unavailable: %s", e)
     redis_client = None
+
+
+# ── RATE LIMITER ──────────────────────────────────────────────────────────────
+def _rate_limit(key: str, max_requests: int, window_seconds: int) -> bool:
+    """
+    Redis-based sliding window rate limiter.
+    Returns True if request is ALLOWED, False if rate limit exceeded.
+    If Redis is down, allows the request (fail-open).
+    """
+    if not redis_client:
+        return True  # No Redis = no rate limiting = fail-open
+    try:
+        rk = f"rl:{key}"
+        current = redis_client.get(rk)
+        if current and int(current) >= max_requests:
+            return False
+        pipe = redis_client.pipeline()
+        pipe.incr(rk)
+        pipe.expire(rk, window_seconds)
+        pipe.execute()
+        return True
+    except Exception as e:
+        log.warning("Rate limiter error (allowing request): %s", e)
+        return True
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
 _db_url = os.getenv("DATABASE_URL")
@@ -170,6 +194,7 @@ class BuildReq(BaseModel):
     project_type: str
     detail_level: str = "Standard"
     user_email: str = "anonymous"
+    mode: str = "blueprint"  # "blueprint" or "mechanic"
 
 class ChatMsg(BaseModel):
     user_name: str
@@ -210,6 +235,14 @@ def gen_blueprint(req: BuildReq):
     safety = _check_content_safety(project_clean, inventory_clean)
     if safety:
         raise HTTPException(status_code=403, detail=safety["message"])
+
+    # ── RATE LIMITING (before quota check — blocks spam before touching DB) ──
+    if not _rate_limit(f"forge:{req.user_email}", max_requests=10, window_seconds=3600):
+        log.warning("Rate limit hit: forge by %s", req.user_email)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many forge requests. Please wait before trying again."
+        )
 
     # ── QUOTA CHECK & INCREMENT ──
     conn = db_pool.getconn()
@@ -266,10 +299,10 @@ def gen_blueprint(req: BuildReq):
 
     # ── DISPATCH TO CELERY ──
     # Argument order MUST match ai_worker.forge_blueprint_task signature:
-    #   forge_blueprint_task(self, user_email, junk_desc, project_type, detail_level)
+    #   forge_blueprint_task(self, user_email, junk_desc, project_type, detail_level, mode)
     task = celery_app.send_task(
         "ai_worker.forge_blueprint_task",
-        args=[req.user_email, inventory_clean, project_clean, req.detail_level]
+        args=[req.user_email, inventory_clean, project_clean, req.detail_level, req.mode]
     )
     return {"status": "processing", "task_id": task.id}
 
@@ -306,6 +339,11 @@ def chk_task(tid: str):
 def send_chat(msg: ChatMsg):
     if not redis_client:
         raise HTTPException(status_code=503, detail="Chat service unavailable.")
+
+    # Rate limit: 30 messages per minute per user
+    if not _rate_limit(f"chat:{msg.user_name}", max_requests=30, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Slow down — too many messages.")
+
     try:
         entry = json.dumps({
             "user": msg.user_name,
